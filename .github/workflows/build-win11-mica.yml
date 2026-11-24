@@ -4,7 +4,9 @@ name: Build Windows 11 Mica
 #
 # v6: NON usa git apply, NON usa azioni Linux-only, corregge prepare.py per i
 #     repository MSYS2 del 2026 e cattura l'output completo di "Prepara le
-#     librerie" (prepare.log), cosi' se fallisce si vede il vero messaggio. I file modificati (e quelli nuovi della modifica Mica)
+#     librerie" (prepare.log), cosi' se fallisce si vede il vero messaggio.
+# v7: garantisce nasm (lo pretende OpenSSL) e gperf installandoli esplicitamente
+#     da MSYS2 e, se manca, scaricando NASM ufficiale come riserva. I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -106,6 +108,43 @@ jobs:
             TBuild/cache_keys
           key: ayugram-libs-${{ runner.os }}-v1
 
+      - name: Assicura nasm e gperf (servono a OpenSSL e Qt)
+        shell: pwsh
+        run: |
+          $msys  = "TBuild/ThirdParty/msys64"
+          $bash  = Join-Path $msys "usr/bin/bash.exe"
+          $mingw = Join-Path $msys "mingw64/bin"
+          $nasmMsys = Join-Path $mingw "nasm.exe"
+
+          if (Test-Path $bash) {
+            Write-Host "== MSYS2 presente: installo il toolchain mingw64 =="
+            & $bash -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-nasm mingw-w64-x86_64-gperf mingw-w64-x86_64-perl mingw-w64-x86_64-pkgconf make diffutils" 2>&1 |
+              ForEach-Object { Write-Host $_ }
+            Write-Host "exit pacman: $LASTEXITCODE"
+          } else {
+            Write-Host "MSYS2 non ancora installato: lo installera' prepare.py allo stage 2"
+          }
+
+          Write-Host ("nasm.exe in MSYS2: {0}" -f (Test-Path $nasmMsys))
+          Write-Host ("gperf.exe in MSYS2: {0}" -f (Test-Path (Join-Path $mingw 'gperf.exe')))
+
+          if (-not (Test-Path $nasmMsys)) {
+            Write-Host "== riserva: scarico NASM ufficiale =="
+            $zip = "TBuild/ThirdParty/nasm.zip"
+            New-Item -ItemType Directory -Force -Path "TBuild/ThirdParty" | Out-Null
+            Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath "TBuild/ThirdParty/nasm" -Force
+            Remove-Item $zip -Force
+          }
+
+          $nasm = Get-ChildItem "TBuild/ThirdParty" -Recurse -Filter "nasm.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $nasm) { throw "nasm non disponibile: OpenSSL non puo' essere configurato" }
+          Write-Host "nasm: $($nasm.FullName)"
+          & $nasm.FullName -v
+          Add-Content -Path $env:GITHUB_PATH -Value $nasm.DirectoryName
+          if (Test-Path $mingw) { Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path $mingw).Path }
+
       - name: Correggi prepare.py (pacchetti MSYS2 aggiornati)
         working-directory: TBuild/tdesktop
         shell: pwsh
@@ -117,17 +156,25 @@ jobs:
           Select-String -Path "Telegram/build/prepare/prepare.py" -Pattern "diffutils|perl-portable|strawberry" | ForEach-Object { Write-Host $_.Line.Trim() }
 
       - name: Diagnostica strumenti (perl, nasm, git, jom)
+        continue-on-error: true
         shell: pwsh
         run: |
           foreach ($tool in @('git','perl','nasm','jom','cmake','cl','diff','patch')) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
-            if ($cmd) { Write-Host ("OK   {0,-6} {1}" -f $tool, $cmd.Source) }
+            if ($cmd) { Write-Host ("OK    {0,-6} {1}" -f $tool, $cmd.Source) }
             else      { Write-Host ("MANCA {0}" -f $tool) }
           }
-          Write-Host "== perl =="
-          perl -v 2>&1 | Select-Object -First 3
-          Write-Host "== nasm =="
-          nasm -v 2>&1
+          Write-Host "== versioni =="
+          try { perl -v 2>&1 | Select-Object -First 3 | ForEach-Object { Write-Host $_ } } catch { Write-Host "perl non eseguibile" }
+          try { nasm -v 2>&1 | ForEach-Object { Write-Host $_ } } catch { Write-Host "nasm assente (verra' fornito dallo step successivo)" }
+          Write-Host "== contenuto della cache =="
+          if (Test-Path "TBuild/ThirdParty") { Get-ChildItem "TBuild/ThirdParty" | Select-Object -ExpandProperty Name }
+          if (Test-Path "TBuild/ThirdParty/msys64/mingw64/bin") {
+            Write-Host "-- mingw64/bin (nasm, gperf, perl, make):"
+            Get-ChildItem "TBuild/ThirdParty/msys64/mingw64/bin" -Filter "*.exe" -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^(nasm|gperf|perl|make|pkgconf)' } | Select-Object -ExpandProperty Name
+          } else { Write-Host "-- MSYS2 non presente nella cache" }
+          if (Test-Path "TBuild/Libraries") { Write-Host "-- Libraries:"; Get-ChildItem "TBuild/Libraries" | Select-Object -ExpandProperty Name }
 
       - name: Prepara le librerie
         working-directory: TBuild
