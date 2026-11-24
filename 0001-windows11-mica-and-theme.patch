@@ -1,0 +1,1146 @@
+diff --git a/Telegram/CMakeLists.txt b/Telegram/CMakeLists.txt
+index a957cfd..b20f09f 100644
+--- a/Telegram/CMakeLists.txt
++++ b/Telegram/CMakeLists.txt
+@@ -210,6 +210,12 @@ set(ayugram_files
+         ayu/libs/sqlite/sqlite3.c
+         ayu/libs/sqlite/sqlite3.h
+         ayu/libs/sqlite/sqlite_orm.h
++        ayu/features/windows11/platform/linux/windows11_linux.cpp
++        ayu/features/windows11/platform/mac/windows11_mac.mm
++        ayu/features/windows11/platform/platform_windows11.h
++        ayu/features/windows11/platform/win/windows11_win.cpp
++        ayu/features/windows11/windows11.cpp
++        ayu/features/windows11/windows11.h
+         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.cpp
+         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.h
+         ayu/features/streamer_mode/platform/mac/streamer_mode_mac.mm
+diff --git a/Telegram/Resources/langs/lang.strings b/Telegram/Resources/langs/lang.strings
+index 7f49208..98d58c3 100644
+--- a/Telegram/Resources/langs/lang.strings
++++ b/Telegram/Resources/langs/lang.strings
+@@ -9191,3 +9191,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ "ayu_AboutText1" = "ToS breaking Telegram client based on {api_link}.";
+ "ayu_UpdateAyuGram" = "Update AyuGram";
+ "ayu_UtilityRestartRequired" = "The app will close in 5 seconds.";
++"ayu_InterfaceThemeHeader" = "Interface theme";
++"ayu_InterfaceTheme" = "Theme";
++"ayu_InterfaceThemeBoxTitle" = "Interface theme";
++"ayu_InterfaceThemeSystem" = "System";
++"ayu_InterfaceThemeLight" = "Light";
++"ayu_InterfaceThemeDark" = "Dark";
++"ayu_InterfaceThemeDescription" = "The theme is applied to the whole interface. \"System\" follows the Windows light or dark setting and switches automatically.";
++"ayu_MicaEffect" = "Mica effect";
++"ayu_MicaEffectDescription" = "Windows 11 translucent material behind the window. The desktop shows through the chat list and the chat area, unless you set a custom chat background.";
+diff --git a/Telegram/SourceFiles/ayu/ayu_settings.cpp b/Telegram/SourceFiles/ayu/ayu_settings.cpp
+index 2711b7c..a44a702 100644
+--- a/Telegram/SourceFiles/ayu/ayu_settings.cpp
++++ b/Telegram/SourceFiles/ayu/ayu_settings.cpp
+@@ -11,6 +11,7 @@
+ #include "ayu/ayu_ui_settings.h"
+ #include "ayu/ayu_worker.h"
+ #include "ayu/features/streamer_mode/streamer_mode.h"
++#include "ayu/features/windows11/platform/platform_windows11.h"
+ #include "ayu/ui/ayu_logo.h"
+ #include "core/application.h"
+ #include "features/filters/filters_cache_controller.h"
+@@ -1069,6 +1070,24 @@ void AyuSettings::setStreamerMode(bool val) {
+ 	save();
+ }
+ 
++void AyuSettings::setInterfaceTheme(InterfaceTheme val) {
++	if (_interfaceTheme.current() == val) return;
++	_interfaceTheme = val;
++	save();
++}
++
++void AyuSettings::setMicaEffect(bool val) {
++	if (_micaEffect.current() == val) return;
++	_micaEffect = val;
++	// The backdrop is applied by the watcher in the windows11 feature.
++	save();
++}
++
++bool AyuSettings::micaEffectAvailable() const {
++	// DWM exposes the backdrop API only on Windows 11.
++	return AyuFeatures::Windows11::Platform::Supported();
++}
++
+ void to_json(nlohmann::json &j, const AyuSettings &s) {
+ 	auto ghostAccounts = nlohmann::json::object();
+ 	for (const auto &[key, value] : s._ghostAccounts) {
+@@ -1165,6 +1184,8 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
+ 		{"avatarCorners", s._avatarCorners.current()},
+ 		{"singleCornerRadius", s._singleCornerRadius.current()},
+ 		{"streamerMode", s._streamerMode.current()},
++		{"interfaceTheme", s._interfaceTheme.current()},
++		{"micaEffect", s._micaEffect.current()},
+ 		{"messageShotSettings", s._messageShotSettings}
+ 	};
+ }
+@@ -1269,6 +1290,8 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
+ 	s._avatarCorners = j.value("avatarCorners", defaults._avatarCorners.current());
+ 	s._singleCornerRadius = j.value("singleCornerRadius", defaults._singleCornerRadius.current());
+ 	s._streamerMode = j.value("streamerMode", defaults._streamerMode.current());
++	s._interfaceTheme = j.value("interfaceTheme", defaults._interfaceTheme.current());
++	s._micaEffect = j.value("micaEffect", defaults._micaEffect.current());
+ 
+ 	if (j.contains("messageShotSettings") && j["messageShotSettings"].is_object()) {
+ 		j["messageShotSettings"].get_to(s._messageShotSettings);
+diff --git a/Telegram/SourceFiles/ayu/ayu_settings.h b/Telegram/SourceFiles/ayu/ayu_settings.h
+index 49e9bff..eff8937 100644
+--- a/Telegram/SourceFiles/ayu/ayu_settings.h
++++ b/Telegram/SourceFiles/ayu/ayu_settings.h
+@@ -51,6 +51,18 @@ enum class SendWithoutSoundOption {
+ 	Always = 2,
+ };
+ 
++enum class InterfaceTheme {
++	System = 0,
++	Light = 1,
++	Dark = 2,
++};
++
++NLOHMANN_JSON_SERIALIZE_ENUM(InterfaceTheme, {
++	{InterfaceTheme::System, "system"},
++	{InterfaceTheme::Light, "light"},
++	{InterfaceTheme::Dark, "dark"},
++})
++
+ NLOHMANN_JSON_SERIALIZE_ENUM(PeerIdDisplay, {
+ 	{PeerIdDisplay::Hidden, 0},
+ 	{PeerIdDisplay::TelegramApi, 1},
+@@ -354,6 +366,12 @@ public:
+ 	[[nodiscard]] bool singleCornerRadius() const { return _singleCornerRadius.current(); }
+ 	[[nodiscard]] bool streamerMode() const { return _streamerMode.current(); }
+ 
++	// Appearance: Light / Dark / System theme.
++	[[nodiscard]] InterfaceTheme interfaceTheme() const { return _interfaceTheme.current(); }
++	// Windows 11 Mica backdrop for the main window.
++	[[nodiscard]] bool micaEffect() const { return _micaEffect.current(); }
++	[[nodiscard]] bool micaEffectAvailable() const;
++
+ 	void setSaveDeletedMessages(bool val);
+ 	void setSaveMessagesHistory(bool val);
+ 	void setSaveForBots(bool val);
+@@ -440,6 +458,8 @@ public:
+ 	void setAvatarCorners(int val);
+ 	void setSingleCornerRadius(bool val);
+ 	void setStreamerMode(bool val);
++	void setInterfaceTheme(InterfaceTheme val);
++	void setMicaEffect(bool val);
+ 
+ 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeValue() const { return _useGlobalGhostMode.value(); }
+ 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeChanges() const { return _useGlobalGhostMode.changes(); }
+@@ -615,6 +635,10 @@ public:
+ 	[[nodiscard]] rpl::producer<bool> singleCornerRadiusChanges() const { return _singleCornerRadius.changes(); }
+ 	[[nodiscard]] rpl::producer<bool> streamerModeValue() const { return _streamerMode.value(); }
+ 	[[nodiscard]] rpl::producer<bool> streamerModeChanges() const { return _streamerMode.changes(); }
++	[[nodiscard]] rpl::producer<InterfaceTheme> interfaceThemeValue() const { return _interfaceTheme.value(); }
++	[[nodiscard]] rpl::producer<InterfaceTheme> interfaceThemeChanges() const { return _interfaceTheme.changes(); }
++	[[nodiscard]] rpl::producer<bool> micaEffectValue() const { return _micaEffect.value(); }
++	[[nodiscard]] rpl::producer<bool> micaEffectChanges() const { return _micaEffect.changes(); }
+ 
+ 	friend void to_json(nlohmann::json &j, const AyuSettings &s);
+ 	friend void from_json(const nlohmann::json &j, AyuSettings &s);
+@@ -711,6 +735,8 @@ private:
+ 	rpl::variable<int> _avatarCorners = 23;
+ 	rpl::variable<bool> _singleCornerRadius = false;
+ 	rpl::variable<bool> _streamerMode = false;
++	rpl::variable<InterfaceTheme> _interfaceTheme = InterfaceTheme::System;
++	rpl::variable<bool> _micaEffect = true;
+ 
+ 	rpl::variable<bool> _useGlobalGhostMode = true;
+ 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/platform/linux/windows11_linux.cpp b/Telegram/SourceFiles/ayu/features/windows11/platform/linux/windows11_linux.cpp
+new file mode 100644
+index 0000000..ce9ece1
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/platform/linux/windows11_linux.cpp
+@@ -0,0 +1,36 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#include "ayu/features/windows11/platform/platform_windows11.h"
++
++namespace AyuFeatures::Windows11::Platform {
++
++bool Supported() {
++	return false;
++}
++
++bool TransparencyEnabled() {
++	return false;
++}
++
++bool SystemDarkTheme() {
++	return false;
++}
++
++bool ApplyBackdrop(not_null<QWidget*>, Backdrop) {
++	return false;
++}
++
++void ApplyWindowTheme(not_null<QWidget*>, bool) {
++}
++
++void ApplyWindowBorderColor(not_null<QWidget*>) {
++}
++
++void RefreshBackdrop(not_null<QWidget*>) {
++}
++
++} // namespace AyuFeatures::Windows11::Platform
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/platform/mac/windows11_mac.mm b/Telegram/SourceFiles/ayu/features/windows11/platform/mac/windows11_mac.mm
+new file mode 100644
+index 0000000..ce9ece1
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/platform/mac/windows11_mac.mm
+@@ -0,0 +1,36 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#include "ayu/features/windows11/platform/platform_windows11.h"
++
++namespace AyuFeatures::Windows11::Platform {
++
++bool Supported() {
++	return false;
++}
++
++bool TransparencyEnabled() {
++	return false;
++}
++
++bool SystemDarkTheme() {
++	return false;
++}
++
++bool ApplyBackdrop(not_null<QWidget*>, Backdrop) {
++	return false;
++}
++
++void ApplyWindowTheme(not_null<QWidget*>, bool) {
++}
++
++void ApplyWindowBorderColor(not_null<QWidget*>) {
++}
++
++void RefreshBackdrop(not_null<QWidget*>) {
++}
++
++} // namespace AyuFeatures::Windows11::Platform
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/platform/platform_windows11.h b/Telegram/SourceFiles/ayu/features/windows11/platform/platform_windows11.h
+new file mode 100644
+index 0000000..baa381f
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/platform/platform_windows11.h
+@@ -0,0 +1,50 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#pragma once
++
++#include "base/basic_types.h"
++
++class QWidget;
++
++namespace AyuFeatures::Windows11::Platform {
++
++// Backdrop modes exposed by DWM on Windows 11 22H2 and above.
++// Values match DWM_SYSTEMBACKDROP_TYPE from dwmapi.h.
++enum class Backdrop : int {
++	Auto = 0,
++	None = 1,
++	Mica = 2,
++	Acrylic = 3,
++	Tabbed = 4,
++};
++
++// Whether the current OS exposes the Windows 11 backdrop API.
++[[nodiscard]] bool Supported();
++
++// Whether the system transparency effects are enabled by the user.
++[[nodiscard]] bool TransparencyEnabled();
++
++// Whether the system is currently using the dark app theme.
++[[nodiscard]] bool SystemDarkTheme();
++
++// Applies the given backdrop type to the window. Returns false when the
++// platform doesn't support it (another OS or an older Windows build).
++bool ApplyBackdrop(not_null<QWidget*> widget, Backdrop backdrop);
++
++// Sets the rounded corners / border color preferences of the window so the
++// window frame matches the in-app theme.
++void ApplyWindowTheme(not_null<QWidget*> widget, bool dark);
++
++// Applies the system accent color to the window border and title bar,
++// used by the Windows 11 style frame.
++void ApplyWindowBorderColor(not_null<QWidget*> widget);
++
++// Asks DWM to rebuild the backdrop after a theme (light/dark) change so the
++// tint of the Mica material follows the new system palette.
++void RefreshBackdrop(not_null<QWidget*> widget);
++
++} // namespace AyuFeatures::Windows11::Platform
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/platform/win/windows11_win.cpp b/Telegram/SourceFiles/ayu/features/windows11/platform/win/windows11_win.cpp
+new file mode 100644
+index 0000000..c8970ea
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/platform/win/windows11_win.cpp
+@@ -0,0 +1,192 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#include "ayu/features/windows11/platform/platform_windows11.h"
++
++#ifdef Q_OS_WIN
++
++#include "base/platform/base_platform_info.h"
++
++#include <QtCore/QOperatingSystemVersion>
++
++#include <windows.h>
++#include <dwmapi.h>
++
++namespace AyuFeatures::Windows11::Platform {
++namespace {
++
++// DWMWA_* values introduced in the Windows 11 SDK. Defining them locally keeps
++// the build compatible with older SDKs.
++#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
++#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
++#endif // DWMWA_USE_IMMERSIVE_DARK_MODE
++#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
++#define DWMWA_WINDOW_CORNER_PREFERENCE 33
++#endif // DWMWA_WINDOW_CORNER_PREFERENCE
++#ifndef DWMWA_BORDER_COLOR
++#define DWMWA_BORDER_COLOR 34
++#endif // DWMWA_BORDER_COLOR
++#ifndef DWMWA_CAPTION_COLOR
++#define DWMWA_CAPTION_COLOR 35
++#endif // DWMWA_CAPTION_COLOR
++#ifndef DWMWA_SYSTEMBACKDROP_TYPE
++#define DWMWA_SYSTEMBACKDROP_TYPE 38
++#endif // DWMWA_SYSTEMBACKDROP_TYPE
++
++#ifndef DWMWCP_DEFAULT
++#define DWMWCP_DEFAULT 0
++#endif // DWMWCP_DEFAULT
++#ifndef DWMWCP_ROUND
++#define DWMWCP_ROUND 2
++#endif // DWMWCP_ROUND
++
++// DWMWA_SYSTEMBACKDROP_TYPE (Mica / Acrylic / Tabbed) is available since
++// Windows 11 22H2 (build 22621).
++constexpr auto kBackdropBuild = 22621;
++
++[[nodiscard]] DWORD BuildNumber() {
++	static const auto result = [] {
++		const auto version = QOperatingSystemVersion::current();
++		if (version.majorVersion() < 10) {
++			return DWORD(0);
++		}
++		return DWORD(version.microVersion());
++	}();
++	return result;
++}
++
++[[nodiscard]] HWND HandleFromWidget(not_null<QWidget*> widget) {
++	return reinterpret_cast<HWND>(widget->winId());
++}
++
++template <typename Value>
++bool SetAttribute(not_null<QWidget*> widget, DWORD attribute, Value value) {
++	return SUCCEEDED(::DwmSetWindowAttribute(
++		HandleFromWidget(widget),
++		attribute,
++		&value,
++		sizeof(value)));
++}
++
++template <typename Name>
++bool ReadPersonalizeDword(Name name, DWORD &out) {
++	const auto keyName = L""
++		"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
++	auto key = HKEY();
++	if (::RegOpenKeyEx(HKEY_CURRENT_USER, keyName, 0, KEY_READ, &key)
++		!= ERROR_SUCCESS) {
++		return false;
++	}
++	auto type = DWORD(0);
++	auto size = DWORD(sizeof(out));
++	const auto result = ::RegQueryValueEx(
++		key,
++		name,
++		0,
++		&type,
++		reinterpret_cast<LPBYTE>(&out),
++		&size);
++	::RegCloseKey(key);
++	return (result == ERROR_SUCCESS) && (type == REG_DWORD);
++}
++
++} // namespace
++
++bool Supported() {
++	return ::Platform::IsWindows11OrGreater();
++}
++
++bool TransparencyEnabled() {
++	auto value = DWORD(1);
++	return !ReadPersonalizeDword(L"EnableTransparency", value) || (value != 0);
++}
++
++bool SystemDarkTheme() {
++	auto value = DWORD(1);
++	return ReadPersonalizeDword(L"AppsUseLightTheme", value) && (value == 0);
++}
++
++bool ApplyBackdrop(not_null<QWidget*> widget, Backdrop backdrop) {
++	if (!Supported()) {
++		return false;
++	}
++	// The window must be transparent for DWM to show the backdrop through it.
++	widget->setAttribute(Qt::WA_NoSystemBackground, true);
++	widget->setAttribute(Qt::WA_TranslucentBackground, true);
++
++	// Extending the frame into the whole client area makes DWM paint the
++	// system material behind the window content.
++	const auto margins = MARGINS{ -1, -1, -1, -1 };
++	::DwmExtendFrameIntoClientArea(HandleFromWidget(widget), &margins);
++
++	if (BuildNumber() < kBackdropBuild) {
++		// Fallback for the original Windows 11 release (21H2): only the
++		// undocumented "Mica" flag exists there.
++		auto enabled = BOOL(
++			backdrop != Backdrop::None && TransparencyEnabled());
++		SetAttribute(widget, 1029 /* DWMWA_MICA_EFFECT */, enabled);
++		return true;
++	}
++	auto type = int(backdrop);
++	return SetAttribute(widget, DWMWA_SYSTEMBACKDROP_TYPE, type);
++}
++
++void ApplyWindowTheme(not_null<QWidget*> widget, bool dark) {
++	if (!Supported()) {
++		return;
++	}
++	auto darkValue = BOOL(dark ? TRUE : FALSE);
++	SetAttribute(widget, DWMWA_USE_IMMERSIVE_DARK_MODE, darkValue);
++
++	// The rounded corners are drawn by DWM; ask for the default (rounded)
++	// preference so that a custom translucent window still looks native.
++	auto corners = int(DWMWCP_ROUND);
++	SetAttribute(widget, DWMWA_WINDOW_CORNER_PREFERENCE, corners);
++}
++
++void ApplyWindowBorderColor(not_null<QWidget*> widget) {
++	if (!Supported()) {
++		return;
++	}
++	// DWMWA_COLOR_NONE keeps the system default border, which follows the
++	// user accent color when "Show accent color on title bars" is enabled.
++	constexpr auto kColorNone = DWORD(0xFFFFFFFE);
++	SetAttribute(widget, DWMWA_BORDER_COLOR, kColorNone);
++
++	if (BuildNumber() >= kBackdropBuild) {
++		SetAttribute(widget, DWMWA_CAPTION_COLOR, kColorNone);
++	}
++}
++
++void RefreshBackdrop(not_null<QWidget*> widget) {
++	if (!Supported()) {
++		return;
++	}
++	const auto handle = HandleFromWidget(widget);
++	// Forces DWM to recompute the material with the new system colors.
++	::SetWindowPos(
++		handle,
++		nullptr,
++		0,
++		0,
++		0,
++		0,
++		SWP_FRAMECHANGED
++			| SWP_NOMOVE
++			| SWP_NOSIZE
++			| SWP_NOZORDER
++			| SWP_NOACTIVATE
++			| SWP_NOOWNERZORDER);
++	::RedrawWindow(
++		handle,
++		nullptr,
++		nullptr,
++		RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
++}
++
++} // namespace AyuFeatures::Windows11::Platform
++
++#endif // Q_OS_WIN
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/windows11.cpp b/Telegram/SourceFiles/ayu/features/windows11/windows11.cpp
+new file mode 100644
+index 0000000..8ef5bba
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/windows11.cpp
+@@ -0,0 +1,217 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#include "ayu/features/windows11/windows11.h"
++
++#include "ayu/ayu_settings.h"
++#include "ayu/features/windows11/platform/platform_windows11.h"
++#include "core/application.h"
++#include "data/data_wall_paper.h"
++#include "core/core_settings.h"
++#include "window/themes/window_theme.h"
++#include "window/window_controller.h"
++
++#include <QtGui/QColor>
++#include <QtGui/QPainter>
++
++namespace AyuFeatures::Windows11 {
++namespace {
++
++rpl::lifetime Lifetime;
++
++InterfaceTheme Applied;
++
++[[nodiscard]] InterfaceTheme InterfaceThemeFromSettings() {
++	return AyuSettings::getInstance().interfaceTheme();
++}
++
++[[nodiscard]] bool NightModeFor(InterfaceTheme theme) {
++	switch (theme) {
++	case InterfaceTheme::Light:
++		return false;
++	case InterfaceTheme::Dark:
++		return true;
++	case InterfaceTheme::System:
++	default:
++		return Platform::SystemDarkTheme();
++	}
++}
++
++void SwitchNightMode(bool night) {
++	if (Window::Theme::IsNightMode() == night) {
++		return;
++	} else if (!Window::Theme::Background()->nightModeChangeAllowed()) {
++		return;
++	}
++	// ToggleNightMode() flips the current mode and the given path selects the
++	// exact theme to apply for the new mode.
++	if (night) {
++		Window::Theme::ToggleNightMode(Window::Theme::NightThemePath());
++	} else {
++		Window::Theme::ToggleNightMode(QString());
++	}
++	Window::Theme::KeepApplied();
++}
++
++void SyncSystemWatch(bool enabled) {
++	auto &settings = Core::App().settings();
++	if (settings.systemDarkModeEnabled() != enabled) {
++		settings.setSystemDarkModeEnabled(enabled);
++	}
++}
++
++void ForEachWindowWidget(Fn<void(not_null<QWidget*>)> callback) {
++	Core::App().enumerateWindows([&](not_null<Window::Controller*> window) {
++		if (const auto widget = window->widget()) {
++			callback(widget);
++		}
++	});
++}
++
++} // namespace
++
++bool MicaEnabled() {
++	if (!AyuSettings::getInstance().micaEffect()) {
++		return false;
++	} else if (!Platform::Supported()) {
++		return false;
++	}
++	return Platform::TransparencyEnabled();
++}
++
++bool UsesDefaultWallPaper() {
++	const auto &paper = Window::Theme::Background()->paper();
++	// The light "day" wall paper is painted as a flat color, so the Mica
++	// material can take over. Everything else (a theme background, any custom
++	// or cloud wall paper and the default night wall paper) is an image, so
++	// the system material stays behind an opaque surface.
++	return Data::IsDefaultWallPaper(paper)
++		&& !Window::Theme::IsNightMode();
++}
++
++bool TranslucentWindow() {
++	if (!MicaEnabled()) {
++		return false;
++	}
++	return UsesDefaultWallPaper();
++}
++
++QColor WindowBgTint() {
++	const auto night = Window::Theme::IsNightMode();
++	const auto base = night ? QColor(32, 32, 32) : QColor(243, 243, 243);
++	// The tint keeps the text readable while still letting the desktop show
++	// through the window.
++	const auto alpha = night ? 200 : 216;
++	return QColor(base.red(), base.green(), base.blue(), alpha);
++}
++
++void FillBackground(QPainter &p, QRect rect) {
++	if (TranslucentWindow()) {
++		p.fillRect(rect, WindowBgTint());
++	}
++}
++
++void UpdateSurface() {
++}
++
++void ApplyBackdrop(not_null<QWidget*> window) {
++	if (!Platform::Supported()) {
++		return;
++	}
++	Platform::ApplyWindowTheme(window, Window::Theme::IsNightMode());
++	Platform::ApplyWindowBorderColor(window);
++
++	const auto translucent = TranslucentWindow();
++	Platform::ApplyBackdrop(
++		window,
++		translucent ? Platform::Backdrop::Mica : Platform::Backdrop::None);
++}
++
++void ApplyBackdropToAllWindows() {
++	ForEachWindowWidget([](not_null<QWidget*> window) {
++		ApplyBackdrop(window);
++	});
++}
++
++void RefreshWindow(not_null<QWidget*> window) {
++	ApplyBackdrop(window);
++	Platform::RefreshBackdrop(window);
++	window->update();
++}
++
++void ApplyInterfaceTheme() {
++	const auto theme = InterfaceThemeFromSettings();
++	Applied = theme;
++	// In the "System" mode the core keeps following the system color scheme.
++	SyncSystemWatch(theme == InterfaceTheme::System);
++	if (theme != InterfaceTheme::System) {
++		SwitchNightMode(NightModeFor(theme));
++	}
++	Core::App().saveSettingsDelayed();
++	HandleThemeUpdate();
++}
++
++void ApplyInitialTheme() {
++	const auto theme = InterfaceThemeFromSettings();
++	Applied = theme;
++	SyncSystemWatch(theme == InterfaceTheme::System);
++	if (theme != InterfaceTheme::System) {
++		SwitchNightMode(NightModeFor(theme));
++	}
++	UpdateSurface();
++}
++
++void ApplyThemeForSystemChange() {
++	if (InterfaceThemeFromSettings() != InterfaceTheme::System) {
++		return;
++	}
++	SwitchNightMode(NightModeFor(InterfaceTheme::System));
++}
++
++void HandleThemeUpdate() {
++	UpdateSurface();
++	ApplyBackdropToAllWindows();
++	ForceRepaint();
++}
++
++void ForceRepaint() {
++	ForEachWindowWidget([](not_null<QWidget*> window) {
++		window->update();
++	});
++}
++
++void StartWatching() {
++	// The system switched between the light and the dark color scheme.
++	Core::App().settings().systemDarkModeChanges(
++	) | rpl::filter([](std::optional<bool> dark) {
++		return dark.has_value();
++	}) | rpl::on_next([=] {
++		ApplyThemeForSystemChange();
++	}, Lifetime);
++
++	// The theme was changed in the AyuGram settings (the settings button only
++	// stores the value, so this is the single place that applies it).
++	AyuSettings::getInstance().interfaceThemeChanges(
++	) | rpl::on_next([=] {
++		ApplyInterfaceTheme();
++	}, Lifetime);
++
++	// The Mica toggle was switched on or off.
++	AyuSettings::getInstance().micaEffectChanges(
++	) | rpl::skip(1) | rpl::on_next([=] {
++		HandleThemeUpdate();
++	}, Lifetime);
++
++	// A wallpaper or a theme was applied, so the palette changed.
++	Window::Theme::Background()->updates(
++	) | rpl::filter([](const Window::Theme::BackgroundUpdate &update) {
++		return update.paletteChanged();
++	}) | rpl::on_next([=] {
++		HandleThemeUpdate();
++	}, Lifetime);
++}
++
++} // namespace AyuFeatures::Windows11
+diff --git a/Telegram/SourceFiles/ayu/features/windows11/windows11.h b/Telegram/SourceFiles/ayu/features/windows11/windows11.h
+new file mode 100644
+index 0000000..812cebd
+--- /dev/null
++++ b/Telegram/SourceFiles/ayu/features/windows11/windows11.h
+@@ -0,0 +1,65 @@
++// This is the source code of AyuGram for Desktop.
++//
++// We do not and cannot prevent the use of our code,
++// but be respectful and credit the original author.
++//
++// Copyright @Radolyn, 2026
++#pragma once
++
++class QColor;
++class QPainter;
++class QRect;
++class QWidget;
++
++namespace AyuFeatures::Windows11 {
++
++// Whether the Windows 11 Mica backdrop can be used right now: the feature is
++// enabled in the AyuGram settings, the OS supports it and the user keeps the
++// system transparency effects enabled.
++[[nodiscard]] bool MicaEnabled();
++
++// Whether the window background must be translucent, so the system material
++// behind the window is visible. A custom chat wallpaper always wins.
++[[nodiscard]] bool TranslucentWindow();
++
++// The translucent tint painted over the Mica backdrop for the current theme.
++[[nodiscard]] QColor WindowBgTint();
++
++// Paints the translucent Mica tint over the given rectangle. Does nothing
++// when the window is opaque, so callers can always call it before their own
++// painting.
++void FillBackground(QPainter &p, QRect rect);
++
++// Recomputes the cached surface state.
++void UpdateSurface();
++
++// Applies (or removes) the backdrop and the matching window frame theme.
++void ApplyBackdrop(not_null<QWidget*> window);
++
++// Re-applies the backdrop to every opened window.
++void ApplyBackdropToAllWindows();
++
++// Rebuilds the backdrop and repaints the contents of the given window.
++void RefreshWindow(not_null<QWidget*> window);
++
++// Applies the Light / Dark / System choice from the AyuGram settings.
++void ApplyInterfaceTheme();
++
++// Picks the theme right after the background was started, before any window
++// is created.
++void ApplyInitialTheme();
++
++// Re-picks the theme after the system color scheme changed.
++void ApplyThemeForSystemChange();
++
++// Recomputes the surface and the backdrop of all windows after the palette,
++// the wallpaper or the settings changed.
++void HandleThemeUpdate();
++
++// Forces a full repaint of every opened window.
++void ForceRepaint();
++
++// Installs the theme watchers (system color scheme and AyuGram settings).
++void StartWatching();
++
++} // namespace AyuFeatures::Windows11
+diff --git a/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp b/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp
+index 98e492a..f174322 100644
+--- a/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp
++++ b/Telegram/SourceFiles/ayu/ui/settings/settings_appearance.cpp
+@@ -13,6 +13,7 @@
+ #include "ayu/ui/components/avatar_corners_preview.h"
+ #include "ayu/ui/components/icon_picker.h"
+ #include "ayu/ui/settings/ayu_builder.h"
++#include "ayu/features/windows11/windows11.h"
+ #include "ayu/ui/settings/settings_ayu_utils.h"
+ #include "ayu/ui/settings/settings_main.h"
+ #include "inline_bots/bot_attach_web_view.h"
+@@ -185,6 +186,52 @@ void BuildAvatarCorners(SectionBuilder &builder, AyuSectionBuilder &ayu) {
+ 	builder.addSkip();
+ }
+ 
++void BuildTheme(SectionBuilder &builder, AyuSectionBuilder &ayu) {
++	auto *settings = &AyuSettings::getInstance();
++
++	builder.addSubsectionTitle(tr::ayu_InterfaceThemeHeader());
++
++	ayu.addChooseButton({
++		.id = u"ayu/interfaceTheme"_q,
++		.title = tr::ayu_InterfaceTheme(),
++		.boxTitle = tr::ayu_InterfaceThemeBoxTitle(),
++		.initialSelection = int(settings->interfaceTheme()),
++		.options = {
++			tr::ayu_InterfaceThemeSystem(tr::now),
++			tr::ayu_InterfaceThemeLight(tr::now),
++			tr::ayu_InterfaceThemeDark(tr::now),
++		},
++		.setter = [=](int index) {
++			const auto theme = (index == 1)
++				? InterfaceTheme::Light
++				: (index == 2)
++				? InterfaceTheme::Dark
++				: InterfaceTheme::System;
++			AyuSettings::getInstance().setInterfaceTheme(theme);
++		},
++		.keywords = { u"theme"_q, u"dark"_q, u"light"_q, u"system"_q },
++	});
++	builder.addSkip();
++	builder.addDividerText(tr::ayu_InterfaceThemeDescription());
++	builder.addSkip();
++
++#if defined Q_OS_WIN
++	if (AyuSettings::getInstance().micaEffectAvailable()) {
++		ayu.addSettingToggle({
++			.id = u"ayu/micaEffect"_q,
++			.title = tr::ayu_MicaEffect(),
++			.getter = &AyuSettings::micaEffect,
++			.setter = &AyuSettings::setMicaEffect,
++		});
++		builder.addSkip();
++		builder.addDividerText(tr::ayu_MicaEffectDescription());
++		builder.addSkip();
++	}
++#endif // Q_OS_WIN
++
++	ayu.addSectionDivider();
++}
++
+ void BuildAppearance(SectionBuilder &builder, AyuSectionBuilder &ayu) {
+ 	auto *settings = &AyuSettings::getInstance();
+ 
+@@ -383,6 +430,7 @@ const auto kMeta = BuildHelper({
+ 	auto ayu = AyuSectionBuilder(builder);
+ 
+ 	builder.addSkip();
++	BuildTheme(builder, ayu);
+ 	BuildAppIcon(builder, ayu);
+ 	BuildAvatarCorners(builder, ayu);
+ 	BuildAppearance(builder, ayu);
+diff --git a/Telegram/SourceFiles/core/application.cpp b/Telegram/SourceFiles/core/application.cpp
+index 6178f5d..d930ff6 100644
+--- a/Telegram/SourceFiles/core/application.cpp
++++ b/Telegram/SourceFiles/core/application.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "core/application.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "data/data_abstract_structure.h"
+ #include "data/data_channel.h"
+ #include "data/data_forum.h"
+@@ -562,6 +564,8 @@ void Application::startSettingsAndBackground() {
+ 	Local::rewriteSettingsIfNeeded();
+ 	Window::Theme::Background()->start();
+ 	checkSystemDarkMode();
++	AyuFeatures::Windows11::ApplyInitialTheme();
++	AyuFeatures::Windows11::StartWatching();
+ 	Ui::SetScreenReaderModeDisabled(
+ 		settings().readPref<bool>(kScreenReaderModeDisabledKey));
+ }
+diff --git a/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp b/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
+index e8dd8b3..c0fcf09 100644
+--- a/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
++++ b/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "dialogs/dialogs_inner_widget.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "dialogs/dialogs_three_state_icon.h"
+ #include "dialogs/ui/chat_search_empty.h"
+ #include "dialogs/ui/chat_search_in.h"
+@@ -2033,6 +2035,14 @@ void InnerWidget::paintPeerSearchResult(
+ }
+ 
+ QBrush InnerWidget::currentBg() const {
++	if (AyuFeatures::Windows11::TranslucentWindow()) {
++		// Translucent tint over the Mica material, the folder animation still
++		// blends towards the hovered list color.
++		return anim::brush(
++			AyuFeatures::Windows11::WindowBgTint(),
++			st::dialogsBgOver,
++			_childListShown.current().shown);
++	}
+ 	return anim::brush(
+ 		st::dialogsBg,
+ 		st::dialogsBgOver,
+diff --git a/Telegram/SourceFiles/dialogs/dialogs_widget.cpp b/Telegram/SourceFiles/dialogs/dialogs_widget.cpp
+index 2e76757..7f8213c 100644
+--- a/Telegram/SourceFiles/dialogs/dialogs_widget.cpp
++++ b/Telegram/SourceFiles/dialogs/dialogs_widget.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "dialogs/dialogs_widget.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "base/call_delayed.h"
+ #include "base/qt/qt_key_modifiers.h"
+ #include "base/options.h"
+@@ -4991,6 +4993,10 @@ void Widget::paintEvent(QPaintEvent *e) {
+ 		_showAnimation->paintContents(p);
+ 		return;
+ 	}
++	if (AyuFeatures::Windows11::TranslucentWindow()) {
++		// Paint the translucent tint first, the rows are drawn on top of it.
++		AyuFeatures::Windows11::FillBackground(p, r);
++	}
+ 	const auto bg = anim::brush(
+ 		st::dialogsBg,
+ 		st::dialogsBgOver,
+diff --git a/Telegram/SourceFiles/history/history_widget.cpp b/Telegram/SourceFiles/history/history_widget.cpp
+index 520fd33..0a23275 100644
+--- a/Telegram/SourceFiles/history/history_widget.cpp
++++ b/Telegram/SourceFiles/history/history_widget.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "history/history_widget.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "api/api_compose_with_ai.h"
+ #include "api/api_editing.h"
+ #include "api/api_bot.h"
+@@ -11620,11 +11622,17 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
+ 		updateListSize();
+ 	}
+ 
+-	Window::SectionWidget::PaintBackground(
+-		controller(),
+-		controller()->currentChatTheme(),
+-		this,
+-		e->rect());
++	if (!AyuFeatures::Windows11::TranslucentWindow()) {
++		Window::SectionWidget::PaintBackground(
++			controller(),
++			controller()->currentChatTheme(),
++			this,
++			e->rect());
++	} else {
++		// Keep the translucent Mica surface visible behind the messages.
++		Painter p(this);
++		AyuFeatures::Windows11::FillBackground(p, e->rect());
++	}
+ 
+ 	Painter p(this);
+ 	const auto clip = e->rect();
+diff --git a/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp b/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
+index bb75eeb..15a59c4 100644
+--- a/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
++++ b/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "history/view/history_view_top_bar_widget.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "history/history.h"
+ #include "history/view/history_view_send_action.h"
+ #include "boxes/add_contact_box.h"
+@@ -559,7 +561,12 @@ void TopBarWidget::paintEvent(QPaintEvent *e) {
+ 		: -st::topBarHeight;
+ 	const auto slidingTop = std::max(selectedButtonsTop, searchFieldTop);
+ 
+-	p.fillRect(QRect(0, 0, width(), st::topBarHeight), st::topBarBg);
++	const auto barRect = QRect(0, 0, width(), st::topBarHeight);
++	if (AyuFeatures::Windows11::TranslucentWindow()) {
++		AyuFeatures::Windows11::FillBackground(p, barRect);
++	} else {
++		p.fillRect(barRect, st::topBarBg);
++	}
+ 	if (slidingTop < 0) {
+ 		p.translate(0, slidingTop + st::topBarHeight);
+ 		paintTopBar(p);
+diff --git a/Telegram/SourceFiles/mainwidget.cpp b/Telegram/SourceFiles/mainwidget.cpp
+index 96cf0ba..af6c656 100644
+--- a/Telegram/SourceFiles/mainwidget.cpp
++++ b/Telegram/SourceFiles/mainwidget.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "mainwidget.h"
+ 
++#include "ayu/features/windows11/windows11.h"
++
+ #include "api/api_updates.h"
+ #include "api/api_views.h"
+ #include "data/components/scheduled_messages.h"
+@@ -2550,6 +2552,13 @@ void MainWidget::paintEvent(QPaintEvent *e) {
+ 	if (_background) {
+ 		checkChatBackground();
+ 	}
++	if (AyuFeatures::Windows11::TranslucentWindow()) {
++		// The default chat background fills the column with an opaque wall
++		// paper; over the Mica material we only paint the translucent tint so
++		// the system backdrop stays visible.
++		auto p = QPainter(this);
++		AyuFeatures::Windows11::FillBackground(p, e->rect());
++	}
+ 	if (_showAnimation) {
+ 		auto p = QPainter(this);
+ 		_showAnimation->paintContents(p);
+diff --git a/Telegram/SourceFiles/mainwindow.cpp b/Telegram/SourceFiles/mainwindow.cpp
+index 0338903..5dde24c 100644
+--- a/Telegram/SourceFiles/mainwindow.cpp
++++ b/Telegram/SourceFiles/mainwindow.cpp
+@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "mainwindow.h"
+ 
++#include "ayu/ayu_settings.h"
++#include "ayu/features/windows11/windows11.h"
++
+ #include "data/data_document.h"
+ #include "data/data_session.h"
+ #include "data/data_document_media.h"
+@@ -103,7 +106,27 @@ MainWindow::MainWindow(not_null<Window::Controller*> controller)
+ 		Ui::ForceFullRepaint(this);
+ 	}, lifetime());
+ 
+-	setAttribute(Qt::WA_OpaquePaintEvent);
++	updateMicaSurface();
++	AyuSettings::getInstance().micaEffectChanges(
++	) | rpl::skip(1) | rpl::on_next([=] {
++		updateMicaSurface();
++	}, lifetime());
++}
++
++void MainWindow::updateMicaSurface() {
++	const auto translucent = AyuFeatures::Windows11::TranslucentWindow();
++	// The window background is opaque, unless the Mica material is used.
++	if (translucent) {
++		setAttribute(Qt::WA_TranslucentBackground, true);
++		setAttribute(Qt::WA_NoSystemBackground, true);
++		setAttribute(Qt::WA_OpaquePaintEvent, false);
++	} else {
++		setAttribute(Qt::WA_OpaquePaintEvent, true);
++		setAttribute(Qt::WA_NoSystemBackground, false);
++		setAttribute(Qt::WA_TranslucentBackground, false);
++	}
++	AyuFeatures::Windows11::ApplyBackdrop(this);
++	update();
+ }
+ 
+ void MainWindow::initHook() {
+diff --git a/Telegram/SourceFiles/mainwindow.h b/Telegram/SourceFiles/mainwindow.h
+index 3843e3b..bf8f9e5 100644
+--- a/Telegram/SourceFiles/mainwindow.h
++++ b/Telegram/SourceFiles/mainwindow.h
+@@ -68,6 +68,9 @@ public:
+ 
+ 	void setInnerFocus() override;
+ 
++	// Applies or removes the translucent Windows 11 Mica surface.
++	void updateMicaSurface();
++
+ 	MainWidget *sessionContent() const;
+ 
+ 	void checkActivation() override;
+diff --git a/Telegram/SourceFiles/platform/win/main_window_win.cpp b/Telegram/SourceFiles/platform/win/main_window_win.cpp
+index 9e3f9db..ece6837 100644
+--- a/Telegram/SourceFiles/platform/win/main_window_win.cpp
++++ b/Telegram/SourceFiles/platform/win/main_window_win.cpp
+@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "platform/win/main_window_win.h"
+ 
++#include "ayu/ayu_settings.h"
++
+ #include "platform/platform_specific.h"
+ #include "platform/platform_notifications_manager.h"
+ #include "platform/win/tray_win.h"
+@@ -468,6 +470,7 @@ void MainWindow::setupNativeWindowFrame() {
+ 		Window::Theme::IsNightModeValue()
+ 	) | rpl::skip(1) | rpl::on_next([=](bool native, bool night) {
+ 		validateWindowTheme(native, night);
++		validateBackdropTheme();
+ 	}, lifetime());
+ }
+ 
+@@ -730,6 +733,12 @@ void MainWindow::initHook() {
+ 		Window::Theme::IsNightMode());
+ }
+ 
++void MainWindow::validateBackdropTheme() {
++	// The Mica backdrop (and the light/dark window frame that goes with it) is
++	// applied by the Windows 11 feature of AyuGram.
++	updateMicaSurface();
++}
++
+ void MainWindow::validateWindowTheme(bool native, bool night) {
+ 	if (!IsWindows8OrGreater()) {
+ 		const auto empty = native ? nullptr : L" ";
+@@ -816,6 +825,12 @@ void MainWindow::validateWindowTheme(bool native, bool night) {
+ 	//	}
+ 	//}
+ 
++	// The translucent Mica surface needs the dark frame of DWM to be in sync
++	// with the theme we apply ourselves.
++	if (AyuSettings::getInstance().micaEffect()) {
++		validateBackdropTheme();
++	}
++
+ 	// Didn't find any other way to definitely repaint with the new style.
+ 	SendMessage(_hWnd, WM_NCACTIVATE, _hasActiveFrame ? 0 : 1, 0);
+ 	SendMessage(_hWnd, WM_NCACTIVATE, _hasActiveFrame ? 1 : 0, 0);
+diff --git a/Telegram/SourceFiles/platform/win/main_window_win.h b/Telegram/SourceFiles/platform/win/main_window_win.h
+index 95f9d52..0d842d5 100644
+--- a/Telegram/SourceFiles/platform/win/main_window_win.h
++++ b/Telegram/SourceFiles/platform/win/main_window_win.h
+@@ -78,6 +78,7 @@ private:
+ 	void setupPreviewPasscodeLock();
+ 	void updateTaskbarAndIconCounters();
+ 	void validateWindowTheme(bool native, bool night);
++	void validateBackdropTheme();
+ 
+ 	void forceIconRefresh();
+ 	void destroyCachedIcons();
+diff --git a/Telegram/lib_ui b/Telegram/lib_ui
+index e3d0582..b5554d5 160000
+--- a/Telegram/lib_ui
++++ b/Telegram/lib_ui
+@@ -1 +1 @@
+-Subproject commit e3d058223aea0b68938a07a7d436d67aaf2b1b30
++Subproject commit b5554d581179f2170f5cb9f596d99e9218f15ee0
