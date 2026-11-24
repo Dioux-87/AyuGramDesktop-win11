@@ -56,8 +56,10 @@ old_bash = (
 )
 new_bash = (
     '    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm; '
-    'pacman -S --noconfirm --needed diffutils; '
-    'pacman -S --noconfirm --needed make gperf nasm perl pkgconf"\n'
+    'pacman -S --noconfirm --needed diffutils make; '
+    'pacman -S --noconfirm --needed mingw-w64-x86_64-nasm '
+    'mingw-w64-x86_64-gperf mingw-w64-x86_64-perl '
+    'mingw-w64-x86_64-pkgconf"\n'
 )
 # la vecchia versione (due righe separate) va comunque sostituita se presente
 old_two_lines = (
@@ -107,8 +109,8 @@ else:
 checks = {
     'niente pacchetto mingw64 diffutils': 'mingw-w64-x86_64-diffutils' not in s,
     'diffutils dal repo msys': 'pacman -S --noconfirm --needed diffutils' in s,
-    'nasm installato (serve a OpenSSL)': re.search(
-        r'pacman -S --noconfirm --needed[^\n]*\bnasm\b', s) is not None,
+    'nasm installato (serve a OpenSSL)': ('mingw-w64-x86_64-nasm' in s) or (
+        re.search(r'pacman -S --noconfirm --needed[^\n]*\bnasm\b', s) is not None),
     'pacchetti msys in un solo bash -c': s.count('bash -c "pacman-key --init') == 1,
     'strawberry perl disponibile': "stage('strawberry-perl'" in s,
 }
