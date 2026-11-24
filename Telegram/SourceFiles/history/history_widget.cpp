@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_widget.h"
 
+#include "ayu/features/windows11/windows11.h"
+
 #include "api/api_compose_with_ai.h"
 #include "api/api_editing.h"
 #include "api/api_bot.h"
@@ -11620,11 +11622,17 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 		updateListSize();
 	}
 
-	Window::SectionWidget::PaintBackground(
-		controller(),
-		controller()->currentChatTheme(),
-		this,
-		e->rect());
+	if (!AyuFeatures::Windows11::TranslucentWindow()) {
+		Window::SectionWidget::PaintBackground(
+			controller(),
+			controller()->currentChatTheme(),
+			this,
+			e->rect());
+	} else {
+		// Keep the translucent Mica surface visible behind the messages.
+		Painter p(this);
+		AyuFeatures::Windows11::FillBackground(p, e->rect());
+	}
 
 	Painter p(this);
 	const auto clip = e->rect();

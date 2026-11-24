@@ -78,6 +78,7 @@ private:
 	void setupPreviewPasscodeLock();
 	void updateTaskbarAndIconCounters();
 	void validateWindowTheme(bool native, bool night);
+	void validateBackdropTheme();
 
 	void forceIconRefresh();
 	void destroyCachedIcons();

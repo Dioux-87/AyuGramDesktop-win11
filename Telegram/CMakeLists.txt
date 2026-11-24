@@ -210,6 +210,12 @@ set(ayugram_files
         ayu/libs/sqlite/sqlite3.c
         ayu/libs/sqlite/sqlite3.h
         ayu/libs/sqlite/sqlite_orm.h
+        ayu/features/windows11/platform/linux/windows11_linux.cpp
+        ayu/features/windows11/platform/mac/windows11_mac.mm
+        ayu/features/windows11/platform/platform_windows11.h
+        ayu/features/windows11/platform/win/windows11_win.cpp
+        ayu/features/windows11/windows11.cpp
+        ayu/features/windows11/windows11.h
         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.cpp
         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.h
         ayu/features/streamer_mode/platform/mac/streamer_mode_mac.mm

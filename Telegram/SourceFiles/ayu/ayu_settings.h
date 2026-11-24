@@ -51,6 +51,18 @@ enum class SendWithoutSoundOption {
 	Always = 2,
 };
 
+enum class InterfaceTheme {
+	System = 0,
+	Light = 1,
+	Dark = 2,
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(InterfaceTheme, {
+	{InterfaceTheme::System, "system"},
+	{InterfaceTheme::Light, "light"},
+	{InterfaceTheme::Dark, "dark"},
+})
+
 NLOHMANN_JSON_SERIALIZE_ENUM(PeerIdDisplay, {
 	{PeerIdDisplay::Hidden, 0},
 	{PeerIdDisplay::TelegramApi, 1},
@@ -354,6 +366,12 @@ public:
 	[[nodiscard]] bool singleCornerRadius() const { return _singleCornerRadius.current(); }
 	[[nodiscard]] bool streamerMode() const { return _streamerMode.current(); }
 
+	// Appearance: Light / Dark / System theme.
+	[[nodiscard]] InterfaceTheme interfaceTheme() const { return _interfaceTheme.current(); }
+	// Windows 11 Mica backdrop for the main window.
+	[[nodiscard]] bool micaEffect() const { return _micaEffect.current(); }
+	[[nodiscard]] bool micaEffectAvailable() const;
+
 	void setSaveDeletedMessages(bool val);
 	void setSaveMessagesHistory(bool val);
 	void setSaveForBots(bool val);
@@ -440,6 +458,8 @@ public:
 	void setAvatarCorners(int val);
 	void setSingleCornerRadius(bool val);
 	void setStreamerMode(bool val);
+	void setInterfaceTheme(InterfaceTheme val);
+	void setMicaEffect(bool val);
 
 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeValue() const { return _useGlobalGhostMode.value(); }
 	[[nodiscard]] rpl::producer<bool> useGlobalGhostModeChanges() const { return _useGlobalGhostMode.changes(); }
@@ -615,6 +635,10 @@ public:
 	[[nodiscard]] rpl::producer<bool> singleCornerRadiusChanges() const { return _singleCornerRadius.changes(); }
 	[[nodiscard]] rpl::producer<bool> streamerModeValue() const { return _streamerMode.value(); }
 	[[nodiscard]] rpl::producer<bool> streamerModeChanges() const { return _streamerMode.changes(); }
+	[[nodiscard]] rpl::producer<InterfaceTheme> interfaceThemeValue() const { return _interfaceTheme.value(); }
+	[[nodiscard]] rpl::producer<InterfaceTheme> interfaceThemeChanges() const { return _interfaceTheme.changes(); }
+	[[nodiscard]] rpl::producer<bool> micaEffectValue() const { return _micaEffect.value(); }
+	[[nodiscard]] rpl::producer<bool> micaEffectChanges() const { return _micaEffect.changes(); }
 
 	friend void to_json(nlohmann::json &j, const AyuSettings &s);
 	friend void from_json(const nlohmann::json &j, AyuSettings &s);
@@ -711,6 +735,8 @@ private:
 	rpl::variable<int> _avatarCorners = 23;
 	rpl::variable<bool> _singleCornerRadius = false;
 	rpl::variable<bool> _streamerMode = false;
+	rpl::variable<InterfaceTheme> _interfaceTheme = InterfaceTheme::System;
+	rpl::variable<bool> _micaEffect = true;
 
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;

@@ -11,6 +11,7 @@
 #include "ayu/ayu_ui_settings.h"
 #include "ayu/ayu_worker.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
+#include "ayu/features/windows11/platform/platform_windows11.h"
 #include "ayu/ui/ayu_logo.h"
 #include "core/application.h"
 #include "features/filters/filters_cache_controller.h"
@@ -1069,6 +1070,24 @@ void AyuSettings::setStreamerMode(bool val) {
 	save();
 }
 
+void AyuSettings::setInterfaceTheme(InterfaceTheme val) {
+	if (_interfaceTheme.current() == val) return;
+	_interfaceTheme = val;
+	save();
+}
+
+void AyuSettings::setMicaEffect(bool val) {
+	if (_micaEffect.current() == val) return;
+	_micaEffect = val;
+	// The backdrop is applied by the watcher in the windows11 feature.
+	save();
+}
+
+bool AyuSettings::micaEffectAvailable() const {
+	// DWM exposes the backdrop API only on Windows 11.
+	return AyuFeatures::Windows11::Platform::Supported();
+}
+
 void to_json(nlohmann::json &j, const AyuSettings &s) {
 	auto ghostAccounts = nlohmann::json::object();
 	for (const auto &[key, value] : s._ghostAccounts) {
@@ -1165,6 +1184,8 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		{"avatarCorners", s._avatarCorners.current()},
 		{"singleCornerRadius", s._singleCornerRadius.current()},
 		{"streamerMode", s._streamerMode.current()},
+		{"interfaceTheme", s._interfaceTheme.current()},
+		{"micaEffect", s._micaEffect.current()},
 		{"messageShotSettings", s._messageShotSettings}
 	};
 }
@@ -1269,6 +1290,8 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._avatarCorners = j.value("avatarCorners", defaults._avatarCorners.current());
 	s._singleCornerRadius = j.value("singleCornerRadius", defaults._singleCornerRadius.current());
 	s._streamerMode = j.value("streamerMode", defaults._streamerMode.current());
+	s._interfaceTheme = j.value("interfaceTheme", defaults._interfaceTheme.current());
+	s._micaEffect = j.value("micaEffect", defaults._micaEffect.current());
 
 	if (j.contains("messageShotSettings") && j["messageShotSettings"].is_object()) {
 		j["messageShotSettings"].get_to(s._messageShotSettings);

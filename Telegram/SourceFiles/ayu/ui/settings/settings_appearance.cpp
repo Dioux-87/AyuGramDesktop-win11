@@ -13,6 +13,7 @@
 #include "ayu/ui/components/avatar_corners_preview.h"
 #include "ayu/ui/components/icon_picker.h"
 #include "ayu/ui/settings/ayu_builder.h"
+#include "ayu/features/windows11/windows11.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
 #include "ayu/ui/settings/settings_main.h"
 #include "inline_bots/bot_attach_web_view.h"
@@ -183,6 +184,52 @@ void BuildAvatarCorners(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	builder.addSkip();
 	builder.addDividerText(tr::ayu_SingleCornerRadiusDescription());
 	builder.addSkip();
+}
+
+void BuildTheme(SectionBuilder &builder, AyuSectionBuilder &ayu) {
+	auto *settings = &AyuSettings::getInstance();
+
+	builder.addSubsectionTitle(tr::ayu_InterfaceThemeHeader());
+
+	ayu.addChooseButton({
+		.id = u"ayu/interfaceTheme"_q,
+		.title = tr::ayu_InterfaceTheme(),
+		.boxTitle = tr::ayu_InterfaceThemeBoxTitle(),
+		.initialSelection = int(settings->interfaceTheme()),
+		.options = {
+			tr::ayu_InterfaceThemeSystem(tr::now),
+			tr::ayu_InterfaceThemeLight(tr::now),
+			tr::ayu_InterfaceThemeDark(tr::now),
+		},
+		.setter = [=](int index) {
+			const auto theme = (index == 1)
+				? InterfaceTheme::Light
+				: (index == 2)
+				? InterfaceTheme::Dark
+				: InterfaceTheme::System;
+			AyuSettings::getInstance().setInterfaceTheme(theme);
+		},
+		.keywords = { u"theme"_q, u"dark"_q, u"light"_q, u"system"_q },
+	});
+	builder.addSkip();
+	builder.addDividerText(tr::ayu_InterfaceThemeDescription());
+	builder.addSkip();
+
+#if defined Q_OS_WIN
+	if (AyuSettings::getInstance().micaEffectAvailable()) {
+		ayu.addSettingToggle({
+			.id = u"ayu/micaEffect"_q,
+			.title = tr::ayu_MicaEffect(),
+			.getter = &AyuSettings::micaEffect,
+			.setter = &AyuSettings::setMicaEffect,
+		});
+		builder.addSkip();
+		builder.addDividerText(tr::ayu_MicaEffectDescription());
+		builder.addSkip();
+	}
+#endif // Q_OS_WIN
+
+	ayu.addSectionDivider();
 }
 
 void BuildAppearance(SectionBuilder &builder, AyuSectionBuilder &ayu) {
@@ -383,6 +430,7 @@ const auto kMeta = BuildHelper({
 	auto ayu = AyuSectionBuilder(builder);
 
 	builder.addSkip();
+	BuildTheme(builder, ayu);
 	BuildAppIcon(builder, ayu);
 	BuildAvatarCorners(builder, ayu);
 	BuildAppearance(builder, ayu);

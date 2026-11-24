@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mainwindow.h"
 
+#include "ayu/ayu_settings.h"
+#include "ayu/features/windows11/windows11.h"
+
 #include "data/data_document.h"
 #include "data/data_session.h"
 #include "data/data_document_media.h"
@@ -103,7 +106,27 @@ MainWindow::MainWindow(not_null<Window::Controller*> controller)
 		Ui::ForceFullRepaint(this);
 	}, lifetime());
 
-	setAttribute(Qt::WA_OpaquePaintEvent);
+	updateMicaSurface();
+	AyuSettings::getInstance().micaEffectChanges(
+	) | rpl::skip(1) | rpl::on_next([=] {
+		updateMicaSurface();
+	}, lifetime());
+}
+
+void MainWindow::updateMicaSurface() {
+	const auto translucent = AyuFeatures::Windows11::TranslucentWindow();
+	// The window background is opaque, unless the Mica material is used.
+	if (translucent) {
+		setAttribute(Qt::WA_TranslucentBackground, true);
+		setAttribute(Qt::WA_NoSystemBackground, true);
+		setAttribute(Qt::WA_OpaquePaintEvent, false);
+	} else {
+		setAttribute(Qt::WA_OpaquePaintEvent, true);
+		setAttribute(Qt::WA_NoSystemBackground, false);
+		setAttribute(Qt::WA_TranslucentBackground, false);
+	}
+	AyuFeatures::Windows11::ApplyBackdrop(this);
+	update();
 }
 
 void MainWindow::initHook() {

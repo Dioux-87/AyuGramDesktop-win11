@@ -68,6 +68,9 @@ public:
 
 	void setInnerFocus() override;
 
+	// Applies or removes the translucent Windows 11 Mica surface.
+	void updateMicaSurface();
+
 	MainWidget *sessionContent() const;
 
 	void checkActivation() override;
