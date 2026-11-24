@@ -9,7 +9,10 @@ name: Build Windows 11 Mica
 #     da MSYS2 e, se manca, scaricando NASM ufficiale come riserva.
 # v8: garantisce anche jom (prepare.py lo cerca in ThirdParty\jom ma il pacchetto
 #     ufficiale si scompatta in ThirdParty\jom_1_1_3) e perl; mostra l'output a
-#     partire dall'ultimo "BUILDING:" invece delle sole ultime righe. I file modificati (e quelli nuovi della modifica Mica)
+#     partire dall'ultimo "BUILDING:" invece delle sole ultime righe.
+# v9: prepare.py: `pacman -Syu` non blocca piu' l'installazione dei pacchetti
+#     (uccideva la shell e lasciava lo stage "riuscito" ma senza nasm/perl).
+#     Inoltre ripristina la cache anche se l'ultima run e' fallita (restore-keys). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -110,6 +113,35 @@ jobs:
             TBuild/ThirdParty
             TBuild/cache_keys
           key: ayugram-libs-${{ runner.os }}-v1
+
+      - name: Ripristina la cache anche da una run fallita
+        shell: pwsh
+        run: |
+          # GitHub salva la cache SOLO se il job finisce verde: finche' la build
+          # fallisce, la cache "buona" non esiste e ogni run riparte da zero.
+          # Questo step recupera l'ultima cache disponibile (anche se di una run
+          # fallita e quindi non salvata) usando l'API di GitHub.
+          $repo = "${{ github.repository }}"
+          $headers = @{ Authorization = "Bearer ${{ github.token }}"; Accept = "application/vnd.github+json" }
+          try {
+            $caches = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/actions/caches?per_page=100" -Headers $headers
+          } catch { Write-Host "Cache API non disponibile: $_"; exit 0 }
+          $c = $caches.actions_caches | Where-Object { $_.key -like "ayugram-libs-Windows*" } | Select-Object -First 1
+          if (-not $c) { Write-Host "Nessuna cache precedente trovata."; exit 0 }
+          Write-Host "Cache trovata: $($c.key) (creata $($c.created_at), usata $($c.last_accessed_at))"
+          if (Test-Path "TBuild/Libraries") {
+            Write-Host "La cache e' gia' stata ripristinata dallo step precedente."
+            exit 0
+          }
+          Write-Host "Scarico la cache $($c.key) ..."
+          $url  = $c.archive_download_url
+          $tmp  = Join-Path $env:RUNNER_TEMP "cache.zip"
+          Invoke-WebRequest -Uri $url -Headers $headers -OutFile $tmp -MaximumRedirection 5
+          Write-Host ("Scaricati {0:N0} MB" -f ((Get-Item $tmp).Length / 1MB))
+          New-Item -ItemType Directory -Force -Path "TBuild" | Out-Null
+          tar -xf $tmp -C "TBuild"
+          Remove-Item $tmp -Force
+          Get-ChildItem "TBuild" | Select-Object -ExpandProperty Name
 
       - name: Assicura nasm, gperf, jom e perl (servono a OpenSSL)
         shell: pwsh
