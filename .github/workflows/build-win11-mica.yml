@@ -2,8 +2,9 @@ name: Build Windows 11 Mica
 
 # Build "solo browser".
 #
-# v5: NON usa git apply, NON usa azioni Linux-only e corregge prepare.py per i
-#     repository MSYS2 del 2026 (pacchetto mingw-w64-x86_64-diffutils rimosso). I file modificati (e quelli nuovi della modifica Mica)
+# v6: NON usa git apply, NON usa azioni Linux-only, corregge prepare.py per i
+#     repository MSYS2 del 2026 e cattura l'output completo di "Prepara le
+#     librerie" (prepare.log), cosi' se fallisce si vede il vero messaggio. I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -115,15 +116,35 @@ jobs:
           Write-Host "== diff delle righe modificate =="
           Select-String -Path "Telegram/build/prepare/prepare.py" -Pattern "diffutils|perl-portable|strawberry" | ForEach-Object { Write-Host $_.Line.Trim() }
 
+      - name: Diagnostica strumenti (perl, nasm, git, jom)
+        shell: pwsh
+        run: |
+          foreach ($tool in @('git','perl','nasm','jom','cmake','cl','diff','patch')) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($cmd) { Write-Host ("OK   {0,-6} {1}" -f $tool, $cmd.Source) }
+            else      { Write-Host ("MANCA {0}" -f $tool) }
+          }
+          Write-Host "== perl =="
+          perl -v 2>&1 | Select-Object -First 3
+          Write-Host "== nasm =="
+          nasm -v 2>&1
+
       - name: Prepara le librerie
         working-directory: TBuild
         shell: cmd
         run: |
-          tdesktop\Telegram\build\prepare\win.bat
-          if errorlevel 1 (
-            echo Primo tentativo fallito, riprovo...
-            tdesktop\Telegram\build\prepare\win.bat || exit /b 1
+          tdesktop\Telegram\build\prepare\win.bat > prepare.log 2>&1
+          set PREPARE_EXIT=%errorlevel%
+          type prepare.log
+          if not "%PREPARE_EXIT%"=="0" (
+            echo.
+            echo ================= ULTIME 40 RIGHE (l'errore vero e' qui) =================
+            powershell -Command "Get-Content prepare.log -Tail 40"
+            echo.
+            echo ======================== FINE LOG ========================
+            exit /b %PREPARE_EXIT%
           )
+          echo Prepara le librerie completato.
 
       - name: Configure
         working-directory: TBuild/tdesktop/Telegram
@@ -150,6 +171,14 @@ jobs:
             Get-ChildItem $exe.DirectoryName -Filter *.dll | Copy-Item -Destination "$env:GITHUB_WORKSPACE\artifacts\" -Force
           }
           Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" | Select-Object Name,Length
+
+      - name: Salva il log di "Prepara le librerie"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-log
+          path: TBuild/prepare.log
+          if-no-files-found: ignore
 
       - name: Upload eseguibile
         if: always()
