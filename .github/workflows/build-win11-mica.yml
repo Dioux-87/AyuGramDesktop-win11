@@ -2,9 +2,12 @@ name: Build Windows 11 Mica
 
 # Build "solo browser".
 #
-# v3: NON usa git apply. I file modificati (e quelli nuovi della modifica Mica)
+# v4: NON usa git apply e NON usa azioni Linux-only (free-disk-space). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
+#
+# I runner Windows hanno il workspace su D: con ~200 GB liberi: lo spazio non
+# e' un problema (la pulizia va fatta solo sui runner Linux).
 #
 # Avvio: tab Actions -> "Build Windows 11 Mica" -> Run workflow.
 on:
@@ -20,23 +23,21 @@ jobs:
       TDESKTOP_API_HASH: 'b18441a1ff607e10a989891a5462e627'
       Platform: x64
     steps:
-      - name: Libera spazio su disco (~20 GB)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: false
-          swap-storage: true
-
       - name: Checkout nel layout richiesto dal build (TBuild/tdesktop)
         uses: actions/checkout@v4
         with:
           path: TBuild/tdesktop
           submodules: recursive
           fetch-depth: 1
+
+      - name: Spazio su disco disponibile
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem |
+            Select-Object Name,@{n='GBFree';e={[math]::Round($_.Free/1GB,1)}} |
+            Format-Table
+          # I runner Windows hanno il workspace su D: con ~200 GB liberi:
+          # nessuna pulizia necessaria (in questa modifica non serve).
 
       - name: Verifica che la modifica Mica sia nel repository
         working-directory: TBuild/tdesktop
