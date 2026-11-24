@@ -1,0 +1,100 @@
+name: Build Windows 11 Mica
+
+# Build 100% "browser only": non serve Git.
+# Applica la patch caricata nel repository, compila AyuGram su Windows e
+# pubblica l'eseguibile come artifact scaricabile.
+#
+# Avvio: tab Actions -> "Build Windows 11 Mica" -> Run workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows x64 (Release)
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      TDESKTOP_API_ID: '2040'
+      TDESKTOP_API_HASH: 'b18441a1ff607e10a989891a5462e627'
+      Platform: x64
+    steps:
+      - name: Checkout nel layout richiesto dal build (TBuild/tdesktop)
+        uses: actions/checkout@v4
+        with:
+          path: TBuild/tdesktop
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Applica la patch (Mica + tema chiaro/scuro/sistema)
+        working-directory: TBuild/tdesktop
+        shell: bash
+        run: |
+          set -e
+          PATCH="0001-windows11-mica-and-theme.patch"
+          if [ ! -f "$PATCH" ]; then
+            PATCH="$(ls *.patch 2>/dev/null | head -n 1)"
+          fi
+          if [ -z "$PATCH" ] || [ ! -f "$PATCH" ]; then
+            echo "ERRORE: nessuna patch .patch nella radice del repository."
+            echo "Carica 0001-windows11-mica-and-theme.patch (Add file -> Upload files)."
+            exit 1
+          fi
+          echo "Uso la patch: $PATCH"
+          if git apply --check "$PATCH" 2>/dev/null; then
+            git apply --verbose "$PATCH"
+          else
+            echo "Applicazione diretta non possibile, provo il merge a 3 vie..."
+            git apply --3way --verbose "$PATCH"
+          fi
+          echo "File nuovi della modifica:"
+          ls Telegram/SourceFiles/ayu/features/windows11/
+
+      - name: Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache librerie precompilate (Qt, OpenSSL, WebRTC, ...)
+        uses: actions/cache@v4
+        with:
+          path: |
+            TBuild/Libraries
+            TBuild/ThirdParty
+            TBuild/cache_keys
+          key: ayugram-libs-${{ runner.os }}-${{ hashFiles('TBuild/tdesktop/Telegram/build/prepare/prepare.py') }}
+
+      - name: Prepara le librerie
+        working-directory: TBuild
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          tdesktop\Telegram\build\prepare\win.bat || exit /b 1
+
+      - name: Configure
+        working-directory: TBuild/tdesktop/Telegram
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% || exit /b 1
+
+      - name: Compila (Release)
+        working-directory: TBuild
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cmake --build TBuild\tdesktop\out --config Release --target Telegram || exit /b 1
+
+      - name: Raccogli l'eseguibile
+        shell: cmd
+        run: |
+          mkdir "%GITHUB_WORKSPACE%\artifacts" 2>nul
+          copy /Y TBuild\tdesktop\out\Release\AyuGram.exe "%GITHUB_WORKSPACE%\artifacts\"
+          if exist TBuild\tdesktop\out\Release\*.dll copy /Y TBuild\tdesktop\out\Release\*.dll "%GITHUB_WORKSPACE%\artifacts\"
+          dir "%GITHUB_WORKSPACE%\artifacts"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Win11-Mica-x64
+          path: artifacts/**
+          if-no-files-found: error
