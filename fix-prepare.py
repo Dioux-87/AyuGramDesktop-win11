@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Rende preparabile AyuGram con i repository MSYS2/MSYS attuali (2026).
+"""Rende preparabile AyuGram con i repository MSYS2/MSYS 2026 e con la shell
+del runner GitHub (non interattiva).
 
-Eseguito dal workflow PRIMA della build: modifica Telegram/build/prepare/prepare.py
-con sostituzioni chirurgiche e verifica che siano state applicate.
+Eseguito dal workflow PRIMA della build: modifica
+Telegram/build/prepare/prepare.py con sostituzioni chirurgiche e verifica che
+siano state applicate.
 
-1. `mingw-w64-x86_64-diffutils` non esiste piu' nei repo MSYS2: il pacchetto
-   `diff` ora sta nel repo MSYS come `diffutils`.
-2. Strawberry Perl portable: garantisce un perl.exe funzionante anche se
-   `mingw-w64-x86_64-perl` non fosse disponibile.
-3. MSYS2 "shell diversa": dopo `pacman -Syu` la shell viene terminata e
-   riavviata di nascosto; le righe successive dello stesso script .bat possono
-   non essere piu' eseguite, pur senza errore. Quindi si installa TUTTO in una
-   singola riga (un solo `bash -c`).
-4. OpenSSL (stage 12) ha bisogno di `nasm` (lo cerca con `nasm -v` e termina con
-   "NASM not found" se non lo trova): lo installiamo esplicitamente.
+Il problema principale (visto nel log: "To complete this update all MSYS2
+processes including this terminal will be closed ... has been terminated"):
 
-Lo script e' idempotente: se prepare.py e' gia' corretto non cambia nulla e
-esce con 0.
+    pacman -Syu uccide la shell che lo esegue (serve a sostituire msys2-runtime).
+    Se lo si lancia nella stessa riga bash degli altri pacchetti, i pacchetti
+    successivi NON vengono installati, ma prepare.py riceve un exit code 0
+    "sporco" e va avanti. Risultato: nessun nasm/perl/gperf/make, nessun errore
+    visibile, e OpenSSL fallisce piu' tardi.
+
+Soluzione: separare l'aggiornamento del sistema (che puo' "fallire", e' normale)
+dall'installazione dei pacchetti (tutta in una riga sola), e fare in modo che il
+fallimento dell'aggiornamento non blocchi lo script.
 """
 import os
 import re
@@ -34,41 +35,50 @@ with open(PREPARE, encoding='utf-8') as f:
 s = original
 applied = []
 
-
-def sub(old, new, label):
-    """Sostituzione idempotente: se il nuovo testo c'e' gia', non fa nulla."""
-    global s
-    if old in s:
-        s = s.replace(old, new)
-        applied.append(label)
-    elif new.strip() and new.split('\n')[0] in s:
-        pass  # gia' applicato in un run precedente
-    else:
-        print('ATTENZIONE: non trovato il testo per "%s"' % label)
-
-
-# --- 1) diffutils: dal repo mingw64 (rimosso) al repo msys --------------------
-sub('        mingw-w64-x86_64-diffutils ^\n', '', 'rimosso mingw64 diffutils')
-
-# --- 2) un solo bash -c con tutti i pacchetti ---------------------------------
-old_bash = (
-    '    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm"\n'
+# --- nuovo blocco di comandi per lo stage msys64 -----------------------------
+NEW_BLOCK = (
+    '    SET MSYS2_PATH_TYPE=inherit\n'
+    '    bash -c "pacman-key --init; pacman-key --populate"\n'
+    '    bash -c "pacman -Syu --noconfirm" || echo [fix] aggiornamento MSYS2 interrotto, continuo\n'
+    '    bash -c "pacman -S --noconfirm --needed diffutils make '
+    'mingw-w64-x86_64-nasm mingw-w64-x86_64-gperf mingw-w64-x86_64-perl '
+    'mingw-w64-x86_64-pkgconf" || bash -c "pacman -Syy --noconfirm --needed '
+    'diffutils make mingw-w64-x86_64-nasm mingw-w64-x86_64-gperf '
+    'mingw-w64-x86_64-perl mingw-w64-x86_64-pkgconf"\n'
 )
-new_bash = (
-    '    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm; '
-    'pacman -S --noconfirm --needed diffutils make; '
-    'pacman -S --noconfirm --needed mingw-w64-x86_64-nasm '
-    'mingw-w64-x86_64-gperf mingw-w64-x86_64-perl '
-    'mingw-w64-x86_64-pkgconf"\n'
-)
-# la vecchia versione (due righe separate) va comunque sostituita se presente
-old_two_lines = (
-    old_bash + '    pacman -S --noconfirm --needed diffutils\n'
-)
-sub(old_two_lines, new_bash, 'pacchetti msys in un solo bash -c')
-sub(old_bash, new_bash, 'pacchetti msys in un solo bash -c')
 
-# --- 3) Perl portable di riserva (OpenSSL ha bisogno di perl.exe) ------------
+# 1) togli il vecchio pacchetto mingw64 diffutils (inesistente dal 2026)
+if '        mingw-w64-x86_64-diffutils ^\n' in s:
+    s = s.replace('        mingw-w64-x86_64-diffutils ^\n', '')
+    applied.append('rimosso mingw-w64-x86_64-diffutils')
+
+# 2) sostituisci la riga bash "tutto in uno" con tre comandi separati.
+#    Copre sia la versione originale di AyuGram sia quella della v5-v7.
+patterns = [
+    # v5-v7: una sola riga con tutti i pacchetti
+    re.compile(r'    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm[^"\n]*"\n'),
+    # originale AyuGram
+    re.compile(r'    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm"\n'
+               r'(?:    pacman -S --noconfirm --needed diffutils\n)?'),
+]
+for pat in patterns:
+    if pat.search(s):
+        s = pat.sub(NEW_BLOCK, s, count=1)
+        applied.append('pacman: aggiornamento separato dai pacchetti')
+        break
+
+# 2b) rimuovi il vecchio blocco pacman multi-riga (fa un secondo -Syu che puo'
+#     terminare di nuovo la shell): i pacchetti sono gia' nella riga singola
+old_multiline = re.compile(r'    pacman -Syu --noconfirm \^\n(?:        [^\n]*\n)+')
+if old_multiline.search(s):
+    s = old_multiline.sub('', s, count=1)
+    applied.append('rimosso vecchio blocco pacman multi-riga')
+
+# 2c) evita la riga SET duplicata
+s = s.replace('    SET MSYS2_PATH_TYPE=inherit\n    SET MSYS2_PATH_TYPE=inherit\n',
+              '    SET MSYS2_PATH_TYPE=inherit\n')
+
+# 3) Perl portable di riserva (OpenSSL ha bisogno di perl.exe)
 sp_anchor = "stage('openssl3', \"\"\"\n"
 if sp_anchor in s and "stage('strawberry-perl'" not in s:
     strawberry = (
@@ -86,7 +96,7 @@ if sp_anchor in s and "stage('strawberry-perl'" not in s:
     s = s.replace(sp_anchor, strawberry + sp_anchor, 1)
     applied.append('stage strawberry-perl')
 
-# OpenSSL: usa il perl portable se c'e'
+# 4) OpenSSL: usa il perl portable se c'e'
 for target in ('debug-VC-WIN64A /FS', 'VC-WIN64A /FS',
                'debug-VC-WIN32 /FS', 'VC-WIN32 /FS',
                'debug-VC-WIN64-ARM /FS', 'VC-WIN64-ARM /FS /Gs4096'):
@@ -106,12 +116,16 @@ else:
     print('Modifiche applicate: ' + ', '.join(applied))
 
 # --- verifiche --------------------------------------------------------------
+pacman_line = re.search(r'    bash -c \"pacman -S --noconfirm --needed ([^\"]+)\"', s)
+packages = pacman_line.group(1).split() if pacman_line else []
 checks = {
     'niente pacchetto mingw64 diffutils': 'mingw-w64-x86_64-diffutils' not in s,
-    'diffutils dal repo msys': 'pacman -S --noconfirm --needed diffutils' in s,
-    'nasm installato (serve a OpenSSL)': ('mingw-w64-x86_64-nasm' in s) or (
-        re.search(r'pacman -S --noconfirm --needed[^\n]*\bnasm\b', s) is not None),
-    'pacchetti msys in un solo bash -c': s.count('bash -c "pacman-key --init') == 1,
+    'aggiornamento MSYS2 separato e non bloccante':
+        re.search(r'bash -c "pacman -Syu --noconfirm" \|\| ', s) is not None,
+    'pacchetti installati in una sola riga':
+        all(p in packages for p in ('diffutils', 'make', 'mingw-w64-x86_64-nasm',
+                                    'mingw-w64-x86_64-gperf', 'mingw-w64-x86_64-perl')),
+    'nasm installato (serve a OpenSSL)': 'mingw-w64-x86_64-nasm' in s,
     'strawberry perl disponibile': "stage('strawberry-perl'" in s,
 }
 for name, ok in checks.items():
