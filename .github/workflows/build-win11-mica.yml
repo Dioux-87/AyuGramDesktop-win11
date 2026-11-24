@@ -1,8 +1,10 @@
 name: Build Windows 11 Mica
 
-# Build 100% "browser only": non serve Git.
-# Applica la patch caricata nel repository, compila AyuGram su Windows e
-# pubblica l'eseguibile come artifact scaricabile.
+# Build "solo browser".
+#
+# v3: NON usa git apply. I file modificati (e quelli nuovi della modifica Mica)
+# sono già nel repository, caricati così come sono: non serve applicare patch,
+# quindi non ci sono conflitti possibili con l'upstream.
 #
 # Avvio: tab Actions -> "Build Windows 11 Mica" -> Run workflow.
 on:
@@ -12,12 +14,23 @@ jobs:
   build:
     name: Windows x64 (Release)
     runs-on: windows-2022
-    timeout-minutes: 360
+    timeout-minutes: 350
     env:
       TDESKTOP_API_ID: '2040'
       TDESKTOP_API_HASH: 'b18441a1ff607e10a989891a5462e627'
       Platform: x64
     steps:
+      - name: Libera spazio su disco (~20 GB)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
       - name: Checkout nel layout richiesto dal build (TBuild/tdesktop)
         uses: actions/checkout@v4
         with:
@@ -25,34 +38,61 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Applica la patch (Mica + tema chiaro/scuro/sistema)
+      - name: Verifica che la modifica Mica sia nel repository
         working-directory: TBuild/tdesktop
-        shell: bash
+        shell: pwsh
         run: |
-          set -e
-          PATCH="0001-windows11-mica-and-theme.patch"
-          if [ ! -f "$PATCH" ]; then
-            PATCH="$(ls *.patch 2>/dev/null | head -n 1)"
-          fi
-          if [ -z "$PATCH" ] || [ ! -f "$PATCH" ]; then
-            echo "ERRORE: nessuna patch .patch nella radice del repository."
-            echo "Carica 0001-windows11-mica-and-theme.patch (Add file -> Upload files)."
+          $missing = @()
+          foreach ($f in @(
+            "Telegram/SourceFiles/ayu/features/windows11/windows11.cpp",
+            "Telegram/SourceFiles/ayu/features/windows11/windows11.h",
+            "Telegram/SourceFiles/ayu/features/windows11/platform/platform_windows11.h",
+            "Telegram/SourceFiles/ayu/features/windows11/platform/win/windows11_win.cpp"
+          )) { if (-not (Test-Path $f)) { $missing += $f } }
+          if ($missing.Count -gt 0) {
+            Write-Host "ERRORE: mancano questi file della modifica:"
+            $missing | ForEach-Object { Write-Host "  $_" }
+            Write-Host ""
+            Write-Host "Carica il contenuto di AyuGram-Win11-files.zip nella radice del repository"
+            Write-Host "(Add file -> Upload files, trascina la cartella Telegram)."
             exit 1
-          fi
-          echo "Uso la patch: $PATCH"
-          if git apply --check "$PATCH" 2>/dev/null; then
-            git apply --verbose "$PATCH"
-          else
-            echo "Applicazione diretta non possibile, provo il merge a 3 vie..."
-            git apply --3way --verbose "$PATCH"
-          fi
-          echo "File nuovi della modifica:"
-          ls Telegram/SourceFiles/ayu/features/windows11/
+          }
+          Write-Host "File della modifica presenti."
+          Select-String -Path "Telegram/CMakeLists.txt" -Pattern "features/windows11" | ForEach-Object { Write-Host "CMakeLists: OK" }
+          Select-String -Path "Telegram/Resources/langs/lang.strings" -Pattern "ayu_MicaEffect" | ForEach-Object { Write-Host "lang.strings: OK" }
+
+      - name: Diagnostica
+        shell: pwsh
+        run: |
+          Write-Host "== Disco =="
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name,@{n='GBFree';e={[math]::Round($_.Free/1GB,1)}} | Format-Table
+          Write-Host "== Visual Studio =="
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) { & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath }
+          Write-Host "== cmake / python =="
+          cmake --version | Select-Object -First 1
+          python --version
 
       - name: Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Imposta l'ambiente Visual Studio (vcvars64)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not $vswhere) { $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw "Visual Studio con C++ non trovato sul runner." }
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat non trovato in $vsPath" }
+          Write-Host "Uso $vcvars"
+          cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])"
+            }
+          }
 
       - name: Cache librerie precompilate (Qt, OpenSSL, WebRTC, ...)
         uses: actions/cache@v4
@@ -61,40 +101,58 @@ jobs:
             TBuild/Libraries
             TBuild/ThirdParty
             TBuild/cache_keys
-          key: ayugram-libs-${{ runner.os }}-${{ hashFiles('TBuild/tdesktop/Telegram/build/prepare/prepare.py') }}
+          key: ayugram-libs-${{ runner.os }}-v1
 
       - name: Prepara le librerie
         working-directory: TBuild
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-          tdesktop\Telegram\build\prepare\win.bat || exit /b 1
+          tdesktop\Telegram\build\prepare\win.bat
+          if errorlevel 1 (
+            echo Primo tentativo fallito, riprovo...
+            tdesktop\Telegram\build\prepare\win.bat || exit /b 1
+          )
 
       - name: Configure
         working-directory: TBuild/tdesktop/Telegram
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% || exit /b 1
 
       - name: Compila (Release)
         working-directory: TBuild
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-          cmake --build TBuild\tdesktop\out --config Release --target Telegram || exit /b 1
+          cmake --build TBuild\tdesktop\out --config Release --target Telegram --parallel || exit /b 1
 
       - name: Raccogli l'eseguibile
-        shell: cmd
+        if: always()
+        shell: pwsh
         run: |
-          mkdir "%GITHUB_WORKSPACE%\artifacts" 2>nul
-          copy /Y TBuild\tdesktop\out\Release\AyuGram.exe "%GITHUB_WORKSPACE%\artifacts\"
-          if exist TBuild\tdesktop\out\Release\*.dll copy /Y TBuild\tdesktop\out\Release\*.dll "%GITHUB_WORKSPACE%\artifacts\"
-          dir "%GITHUB_WORKSPACE%\artifacts"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\artifacts" | Out-Null
+          $exes = Get-ChildItem -Path "TBuild\tdesktop\out" -Recurse -Filter "AyuGram.exe" -ErrorAction SilentlyContinue
+          if (-not $exes) { $exes = Get-ChildItem -Path "TBuild\tdesktop\out" -Recurse -Filter "Telegram.exe" -ErrorAction SilentlyContinue }
+          foreach ($exe in $exes) {
+            Write-Host "Trovato: $($exe.FullName)"
+            Copy-Item $exe.FullName "$env:GITHUB_WORKSPACE\artifacts\" -Force
+            Get-ChildItem $exe.DirectoryName -Filter *.dll | Copy-Item -Destination "$env:GITHUB_WORKSPACE\artifacts\" -Force
+          }
+          Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" | Select-Object Name,Length
 
-      - name: Upload artifact
+      - name: Upload eseguibile
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: AyuGram-Win11-Mica-x64
           path: artifacts/**
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Salva l'output del build (per diagnosi)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            TBuild/tdesktop/out/CMakeCache.txt
+            TBuild/tdesktop/out/**/*.log
+          if-no-files-found: warn
