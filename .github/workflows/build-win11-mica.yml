@@ -6,7 +6,10 @@ name: Build Windows 11 Mica
 #     repository MSYS2 del 2026 e cattura l'output completo di "Prepara le
 #     librerie" (prepare.log), cosi' se fallisce si vede il vero messaggio.
 # v7: garantisce nasm (lo pretende OpenSSL) e gperf installandoli esplicitamente
-#     da MSYS2 e, se manca, scaricando NASM ufficiale come riserva. I file modificati (e quelli nuovi della modifica Mica)
+#     da MSYS2 e, se manca, scaricando NASM ufficiale come riserva.
+# v8: garantisce anche jom (prepare.py lo cerca in ThirdParty\jom ma il pacchetto
+#     ufficiale si scompatta in ThirdParty\jom_1_1_3) e perl; mostra l'output a
+#     partire dall'ultimo "BUILDING:" invece delle sole ultime righe. I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -108,7 +111,7 @@ jobs:
             TBuild/cache_keys
           key: ayugram-libs-${{ runner.os }}-v1
 
-      - name: Assicura nasm e gperf (servono a OpenSSL e Qt)
+      - name: Assicura nasm, gperf, jom e perl (servono a OpenSSL)
         shell: pwsh
         run: |
           $msys  = "TBuild/ThirdParty/msys64"
@@ -144,6 +147,41 @@ jobs:
           & $nasm.FullName -v
           Add-Content -Path $env:GITHUB_PATH -Value $nasm.DirectoryName
           if (Test-Path $mingw) { Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path $mingw).Path }
+
+          # --- jom: prepare.py lo cerca in ThirdParty\jom, ma il pacchetto
+          #     ufficiale si scompatta in ThirdParty\jom_1_1_3 -----------------
+          $jomDir = "TBuild/ThirdParty/jom"
+          if (-not (Test-Path (Join-Path $jomDir "jom.exe"))) {
+            $found = Get-ChildItem "TBuild/ThirdParty" -Recurse -Filter "jom.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($found) {
+              New-Item -ItemType Directory -Force -Path $jomDir | Out-Null
+              Copy-Item $found.FullName (Join-Path $jomDir "jom.exe") -Force
+            } else {
+              Write-Host "== jom assente: lo scarico =="
+              $zip = "TBuild/ThirdParty/jom.zip"
+              Invoke-WebRequest -Uri "https://master.qt.io/official_releases/jom/jom_1_1_3.zip" -OutFile $zip
+              New-Item -ItemType Directory -Force -Path $jomDir | Out-Null
+              Expand-Archive -Path $zip -DestinationPath $jomDir -Force
+              Remove-Item $zip -Force
+            }
+          }
+          if (Test-Path (Join-Path $jomDir "jom.exe")) {
+            Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path $jomDir).Path
+            Write-Host "jom: $((Resolve-Path $jomDir).Path)\jom.exe"
+          } else { Write-Host "ATTENZIONE: jom non disponibile" }
+
+          # --- perl: quello del runner (Strawberry) va benissimo, ma se manca
+          #     lo fornisco portable -----------------------------------------
+          if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
+            Write-Host "== perl assente: scarico Strawberry Perl portable =="
+            $spZip = "TBuild/ThirdParty/strawberry.zip"
+            Invoke-WebRequest -Uri "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54231_64bit/strawberry-perl-5.42.3.1-64bit-portable.zip" -OutFile $spZip
+            Expand-Archive -Path $spZip -DestinationPath "TBuild/ThirdParty/strawberry" -Force
+            Remove-Item $spZip -Force
+            Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path "TBuild/ThirdParty/strawberry/perl/bin").Path
+            Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path "TBuild/ThirdParty/strawberry/c/bin").Path
+          } else { Write-Host "perl: $((Get-Command perl).Source)" }
 
       - name: Correggi prepare.py (pacchetti MSYS2 aggiornati)
         working-directory: TBuild/tdesktop
@@ -185,10 +223,12 @@ jobs:
           type prepare.log
           if not "%PREPARE_EXIT%"=="0" (
             echo.
-            echo ================= ULTIME 40 RIGHE (l'errore vero e' qui) =================
-            powershell -Command "Get-Content prepare.log -Tail 40"
+            echo ##### ERRORI TROVATI NEL LOG (cerca "not recognized" / "error") #####
+            powershell -NoProfile -Command "$l = Get-Content prepare.log; $l | Select-String -Pattern 'not recognized|\[ERROR\]|FAILED|fatal|error C|error LNK|CMake Error' | Select-Object -Last 25 | ForEach-Object { Write-Host $_.Line }"
             echo.
-            echo ======================== FINE LOG ========================
+            echo ##### OUTPUT DELLO STAGE FALLITO (dall'ultimo BUILDING:) #####
+            powershell -NoProfile -Command "$l = Get-Content prepare.log; $i = ($l | Select-String -Pattern 'BUILDING:' | Select-Object -Last 1).LineNumber; if (-not $i) { $i = [Math]::Max(1, $l.Count - 40) }; $l[($i-1)..([Math]::Min($l.Count-1, $i+59))] | ForEach-Object { Write-Host $_ }"
+            echo ##### FINE #####
             exit /b %PREPARE_EXIT%
           )
           echo Prepara le librerie completato.
