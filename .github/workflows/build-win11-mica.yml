@@ -2,7 +2,8 @@ name: Build Windows 11 Mica
 
 # Build "solo browser".
 #
-# v4: NON usa git apply e NON usa azioni Linux-only (free-disk-space). I file modificati (e quelli nuovi della modifica Mica)
+# v5: NON usa git apply, NON usa azioni Linux-only e corregge prepare.py per i
+#     repository MSYS2 del 2026 (pacchetto mingw-w64-x86_64-diffutils rimosso). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -103,6 +104,16 @@ jobs:
             TBuild/ThirdParty
             TBuild/cache_keys
           key: ayugram-libs-${{ runner.os }}-v1
+
+      - name: Correggi prepare.py (pacchetti MSYS2 aggiornati)
+        working-directory: TBuild/tdesktop
+        shell: pwsh
+        run: |
+          Write-Host "== applico fix-prepare.py =="
+          python fix-prepare.py
+          if ($LASTEXITCODE -ne 0) { throw "fix-prepare.py ha fallito" }
+          Write-Host "== diff delle righe modificate =="
+          Select-String -Path "Telegram/build/prepare/prepare.py" -Pattern "diffutils|perl-portable|strawberry" | ForEach-Object { Write-Host $_.Line.Trim() }
 
       - name: Prepara le librerie
         working-directory: TBuild
