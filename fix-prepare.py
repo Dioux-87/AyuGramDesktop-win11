@@ -78,6 +78,26 @@ if old_multiline.search(s):
 s = s.replace('    SET MSYS2_PATH_TYPE=inherit\n    SET MSYS2_PATH_TYPE=inherit\n',
               '    SET MSYS2_PATH_TYPE=inherit\n')
 
+# 3) NIENTE DOMANDE INTERATTIVE ------------------------------------------------
+#    Nel log: "[5/35](ThirdParty/jom): CHANGED, (r)ebuild, rebuild (a)ll, ..."
+#    prepare.py chiede conferma quando la cartella esiste gia' ma la chiave di
+#    cache non combacia (succede quando uno stage precedente e' stato
+#    interrotto). Su un runner GitHub non c'e' nessuno a rispondere: lo script
+#    resta fermo e poi muore. Si rende la scelta automatica ("rebuild").
+OLD_GETCH = """                print('(r)ebuild, rebuild (a)ll, (s)kip, (p)rint, (q)uit?: ', end='', flush=True)
+                while True:
+                    ch = 'r' if rebuildStale else getch()
+"""
+NEW_GETCH = """                print('CHANGED: ricostruisco automaticamente (nessun prompt)')
+                while True:
+                    ch = 'r'
+"""
+if OLD_GETCH in s:
+    s = s.replace(OLD_GETCH, NEW_GETCH, 1)
+    applied.append('niente prompt interattivo (ricostruzione automatica)')
+elif 'CHANGED: ricostruisco automaticamente' not in s:
+    print('ATTENZIONE: prompt interattivo non trovato (prepare.py cambiato?)')
+
 # 3) Perl portable di riserva (OpenSSL ha bisogno di perl.exe)
 sp_anchor = "stage('openssl3', \"\"\"\n"
 if sp_anchor in s and "stage('strawberry-perl'" not in s:
@@ -127,6 +147,7 @@ checks = {
                                     'mingw-w64-x86_64-gperf', 'mingw-w64-x86_64-perl')),
     'nasm installato (serve a OpenSSL)': 'mingw-w64-x86_64-nasm' in s,
     'strawberry perl disponibile': "stage('strawberry-perl'" in s,
+    'nessun prompt interattivo': 'CHANGED: ricostruisco automaticamente' in s,
 }
 for name, ok in checks.items():
     print(('OK   ' if ok else 'FAIL ') + name)
