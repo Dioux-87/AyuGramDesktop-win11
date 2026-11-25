@@ -16,7 +16,10 @@ name: Build Windows 11 Mica
 # v10: l'output di "Prepara le librerie" torna VISIBILE in diretta (Tee-Object)
 #     pur restando salvato in prepare.log per la diagnosi.
 # v11: la cache delle librerie viene salvata ANCHE se la run fallisce, e
-#     prepare.py non fa piu' domande interattive ("(r)ebuild ... (q)uit?"). I file modificati (e quelli nuovi della modifica Mica)
+#     prepare.py non fa piu' domande interattive ("(r)ebuild ... (q)uit?").
+# v12: rimosso lo scaricamento di Strawberry Perl (Expand-Archive falliva con
+#     "Cannot find an overload for ExtractToDirectory": il perl che serve e'
+#     quello di MSYS2, gia' installato allo stage 2). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -150,7 +153,7 @@ jobs:
           Remove-Item $tmp -Force
           Get-ChildItem "TBuild" | Select-Object -ExpandProperty Name
 
-      - name: Assicura nasm, gperf, jom e perl (servono a OpenSSL)
+      - name: Assicura nasm e jom (servono a OpenSSL e Qt)
         shell: pwsh
         run: |
           $msys  = "TBuild/ThirdParty/msys64"
@@ -210,17 +213,11 @@ jobs:
             Write-Host "jom: $((Resolve-Path $jomDir).Path)\jom.exe"
           } else { Write-Host "ATTENZIONE: jom non disponibile" }
 
-          # --- perl: quello del runner (Strawberry) va benissimo, ma se manca
-          #     lo fornisco portable -----------------------------------------
-          if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
-            Write-Host "== perl assente: scarico Strawberry Perl portable =="
-            $spZip = "TBuild/ThirdParty/strawberry.zip"
-            Invoke-WebRequest -Uri "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54231_64bit/strawberry-perl-5.42.3.1-64bit-portable.zip" -OutFile $spZip
-            Expand-Archive -Path $spZip -DestinationPath "TBuild/ThirdParty/strawberry" -Force
-            Remove-Item $spZip -Force
-            Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path "TBuild/ThirdParty/strawberry/perl/bin").Path
-            Add-Content -Path $env:GITHUB_PATH -Value (Resolve-Path "TBuild/ThirdParty/strawberry/c/bin").Path
-          } else { Write-Host "perl: $((Get-Command perl).Source)" }
+          # --- perl: quello di MSYS2 (installato allo stage 2) e' quello giusto
+          #     per compilare OpenSSL. Non serve scaricare altro. ------------
+          $perlMsys = Join-Path $mingw "perl.exe"
+          if (Test-Path $perlMsys) { Write-Host "perl (MSYS2): $perlMsys" }
+          else { Write-Host "perl (MSYS2) non ancora presente: lo installa lo stage 2" }
 
       - name: Correggi prepare.py (pacchetti MSYS2 aggiornati)
         working-directory: TBuild/tdesktop
