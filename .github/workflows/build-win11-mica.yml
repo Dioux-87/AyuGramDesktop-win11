@@ -19,7 +19,10 @@ name: Build Windows 11 Mica
 #     prepare.py non fa piu' domande interattive ("(r)ebuild ... (q)uit?").
 # v12: rimosso lo scaricamento di Strawberry Perl (Expand-Archive falliva con
 #     "Cannot find an overload for ExtractToDirectory": il perl che serve e'
-#     quello di MSYS2, gia' installato allo stage 2). I file modificati (e quelli nuovi della modifica Mica)
+#     quello di MSYS2, gia' installato allo stage 2).
+# v13: percorsi ASSOLUTI per Configure e Compila. Prima "Compila" usava
+#     TBuild\tdesktop\out ma girava gia' dentro TBuild/, quindi cercava
+#     TBuild/TBuild/tdesktop/out (errore "is not a directory"). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -285,12 +288,23 @@ jobs:
         shell: cmd
         run: |
           configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% || exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\TBuild\tdesktop\out\CMakeCache.txt" (
+            echo ERRORE: configure non ha creato la cartella di build
+            dir "%GITHUB_WORKSPACE%\TBuild\tdesktop" /b
+            exit /b 1
+          )
+          echo Configure completato: cartella di build OK
 
       - name: Compila (Release)
-        working-directory: TBuild
         shell: cmd
         run: |
-          cmake --build TBuild\tdesktop\out --config Release --target Telegram --parallel || exit /b 1
+          set BUILD_DIR=%GITHUB_WORKSPACE%\TBuild\tdesktop\out
+          echo Compilo in: %BUILD_DIR%
+          if not exist "%BUILD_DIR%\CMakeCache.txt" (
+            echo ERRORE: %BUILD_DIR% non contiene CMakeCache.txt
+            exit /b 1
+          )
+          cmake --build "%BUILD_DIR%" --config Release --target Telegram --parallel || exit /b 1
 
       - name: Raccogli l'eseguibile
         if: always()
