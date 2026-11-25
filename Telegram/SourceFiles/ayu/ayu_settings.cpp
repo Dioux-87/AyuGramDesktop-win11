@@ -1084,8 +1084,14 @@ void AyuSettings::setMicaEffect(bool val) {
 }
 
 bool AyuSettings::micaEffectAvailable() const {
-	// DWM exposes the backdrop API only on Windows 11.
+	// The Mica backdrop needs the Windows 11 DWM API. The platform layer of
+	// the feature is compiled only on Windows, so on other systems the
+	// backend is not linked and the effect is simply reported unavailable.
+#if defined Q_OS_WIN
 	return AyuFeatures::Windows11::Platform::Supported();
+#else // Q_OS_WIN
+	return false;
+#endif // Q_OS_WIN
 }
 
 void to_json(nlohmann::json &j, const AyuSettings &s) {

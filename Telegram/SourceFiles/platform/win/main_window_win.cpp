@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "platform/win/main_window_win.h"
 
-#include "ayu/ayu_settings.h"
+#include "ayu/features/windows11/windows11.h"
 
 #include "platform/platform_specific.h"
 #include "platform/platform_notifications_manager.h"
@@ -734,9 +734,11 @@ void MainWindow::initHook() {
 }
 
 void MainWindow::validateBackdropTheme() {
-	// The Mica backdrop (and the light/dark window frame that goes with it) is
-	// applied by the Windows 11 feature of AyuGram.
-	updateMicaSurface();
+	// The Mica backdrop is applied by the Windows 11 feature of AyuGram.
+	// NOTE: here "this" is Platform::MainWindow (the base class), so the
+	// MainWindow::updateMicaSurface() method is NOT visible: it belongs to the
+	// derived class. Use the free function instead.
+	AyuFeatures::Windows11::ApplyBackdrop(this);
 }
 
 void MainWindow::validateWindowTheme(bool native, bool night) {
@@ -824,12 +826,6 @@ void MainWindow::validateWindowTheme(bool native, bool night) {
 	//		Dlls::AllowDarkModeForApp(FALSE);
 	//	}
 	//}
-
-	// The translucent Mica surface needs the dark frame of DWM to be in sync
-	// with the theme we apply ourselves.
-	if (AyuSettings::getInstance().micaEffect()) {
-		validateBackdropTheme();
-	}
 
 	// Didn't find any other way to definitely repaint with the new style.
 	SendMessage(_hWnd, WM_NCACTIVATE, _hasActiveFrame ? 0 : 1, 0);

@@ -6,6 +6,8 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
+#include "base/basic_types.h"
+
 class QColor;
 class QPainter;
 class QRect;
