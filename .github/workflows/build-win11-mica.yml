@@ -312,10 +312,23 @@ jobs:
           # Qui: al massimo 4 processi cl.exe, uno per core.
           $env:CL_MPCount = "1"
           $env:PreferredToolArchitecture = "x64"
-          Write-Host "Parallelismo: MSBuild /m:4 con CL_MPCount=1 (max 4 compilazioni insieme)"
-          & cmake --build $build --config Release --target Telegram --
-            /m:4 /p:CL_MPCount=1 /p:UseMultiToolTask=false 2>&1 |
-            Tee-Object -FilePath build.log
+          # /Zm600: raddoppia i limiti di memoria del compilatore (risolve i
+          # C1076/C3859 sui file di precompiled header). /MP1: un file per
+          # processo. Una sola riga: in PowerShell il comando NON prosegue
+          # sulla riga successiva.
+          $env:_CL_ = "/Zm600 /MP1"
+          Write-Host "MSBuild /m:4 + CL_MPCount=1 + /Zm600 (4 compilazioni, piu' memoria per processo)"
+          $cmakeArgs = @(
+            "--build", $build,
+            "--config", "Release",
+            "--target", "Telegram",
+            "--",
+            "/m:4",
+            "/p:CL_MPCount=1",
+            "/p:UseMultiToolTask=false",
+            "/p:CL_AdditionalOptions=/Zm600"
+          )
+          & cmake @cmakeArgs 2>&1 | Tee-Object -FilePath build.log
           $code = $LASTEXITCODE
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
