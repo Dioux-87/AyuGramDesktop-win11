@@ -12,7 +12,11 @@ name: Build Windows 11 Mica
 #     partire dall'ultimo "BUILDING:" invece delle sole ultime righe.
 # v9: prepare.py: `pacman -Syu` non blocca piu' l'installazione dei pacchetti
 #     (uccideva la shell e lasciava lo stage "riuscito" ma senza nasm/perl).
-#     Inoltre ripristina la cache anche se l'ultima run e' fallita (restore-keys). I file modificati (e quelli nuovi della modifica Mica)
+#     Inoltre ripristina la cache anche se l'ultima run e' fallita (restore-keys).
+# v10: l'output di "Prepara le librerie" torna VISIBILE in diretta (Tee-Object)
+#     pur restando salvato in prepare.log per la diagnosi.
+# v11: la cache delle librerie viene salvata ANCHE se la run fallisce, e
+#     prepare.py non fa piu' domande interattive ("(r)ebuild ... (q)uit?"). I file modificati (e quelli nuovi della modifica Mica)
 # sono già nel repository, caricati così come sono: non serve applicare patch,
 # quindi non ci sono conflitti possibili con l'upstream.
 #
@@ -105,14 +109,17 @@ jobs:
             }
           }
 
-      - name: Cache librerie precompilate (Qt, OpenSSL, WebRTC, ...)
-        uses: actions/cache@v4
+      - name: Prova a ripristinare la cache delle librerie
+        id: cache-libs
+        uses: actions/cache/restore@v4
         with:
           path: |
             TBuild/Libraries
             TBuild/ThirdParty
             TBuild/cache_keys
-          key: ayugram-libs-${{ runner.os }}-v1
+          key: ayugram-libs-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ayugram-libs-${{ runner.os }}-
 
       - name: Ripristina la cache anche da una run fallita
         shell: pwsh
@@ -248,22 +255,33 @@ jobs:
 
       - name: Prepara le librerie
         working-directory: TBuild
-        shell: cmd
+        shell: pwsh
         run: |
-          tdesktop\Telegram\build\prepare\win.bat > prepare.log 2>&1
-          set PREPARE_EXIT=%errorlevel%
-          type prepare.log
-          if not "%PREPARE_EXIT%"=="0" (
-            echo.
-            echo ##### ERRORI TROVATI NEL LOG (cerca "not recognized" / "error") #####
-            powershell -NoProfile -Command "$l = Get-Content prepare.log; $l | Select-String -Pattern 'not recognized|\[ERROR\]|FAILED|fatal|error C|error LNK|CMake Error' | Select-Object -Last 25 | ForEach-Object { Write-Host $_.Line }"
-            echo.
-            echo ##### OUTPUT DELLO STAGE FALLITO (dall'ultimo BUILDING:) #####
-            powershell -NoProfile -Command "$l = Get-Content prepare.log; $i = ($l | Select-String -Pattern 'BUILDING:' | Select-Object -Last 1).LineNumber; if (-not $i) { $i = [Math]::Max(1, $l.Count - 40) }; $l[($i-1)..([Math]::Min($l.Count-1, $i+59))] | ForEach-Object { Write-Host $_ }"
-            echo ##### FINE #####
-            exit /b %PREPARE_EXIT%
-          )
-          echo Prepara le librerie completato.
+          # L'output viene MOSTRATO in diretta (Tee-Object) e salvato in
+          # prepare.log per la diagnosi in caso di errore.
+          $bat = "tdesktop\Telegram\build\prepare\win.bat"
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          & cmd /c $bat 2>&1 | Tee-Object -FilePath prepare.log
+          $code = $LASTEXITCODE
+          Write-Host ("Durata 'Prepara le librerie': {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
+
+          if ($code -ne 0) {
+            Write-Host ""
+            Write-Host "##### ERRORI TROVATI NEL LOG #####"
+            Get-Content prepare.log |
+              Select-String -Pattern 'not recognized|\[ERROR\]|FAILED|fatal error|error C[0-9]|error LNK|CMake Error|No such file' |
+              Select-Object -Last 30 | ForEach-Object { Write-Host $_.Line }
+            Write-Host ""
+            Write-Host "##### OUTPUT DELLO STAGE FALLITO (dall'ultimo BUILDING:) #####"
+            $l = Get-Content prepare.log
+            $hit = $l | Select-String -Pattern 'BUILDING:' | Select-Object -Last 1
+            $i = if ($hit) { $hit.LineNumber } else { [Math]::Max(1, $l.Count - 40) }
+            $last = [Math]::Min($l.Count - 1, $i + 59)
+            $l[($i - 1)..$last] | ForEach-Object { Write-Host $_ }
+            Write-Host "##### FINE #####"
+            exit $code
+          }
+          Write-Host "Prepara le librerie completato."
 
       - name: Configure
         working-directory: TBuild/tdesktop/Telegram
@@ -290,6 +308,16 @@ jobs:
             Get-ChildItem $exe.DirectoryName -Filter *.dll | Copy-Item -Destination "$env:GITHUB_WORKSPACE\artifacts\" -Force
           }
           Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" | Select-Object Name,Length
+
+      - name: Salva la cache delle librerie (anche se la run fallisce)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            TBuild/Libraries
+            TBuild/ThirdParty
+            TBuild/cache_keys
+          key: ayugram-libs-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Salva il log di "Prepara le librerie"
         if: always()
