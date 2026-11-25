@@ -314,18 +314,16 @@ jobs:
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
           if ($code -ne 0) {
+            $log = Get-Content build.log
             Write-Host ""
-            Write-Host "################ ERRORI DEL COMPILATORE ################"
-            Get-Content build.log |
-              Select-String -Pattern 'error C[0-9]{4}|error LNK[0-9]{4}|fatal error|error MSB[0-9]+' |
+            Write-Host "################ QUALUNQUE RIGA CON 'error' ################"
+            $log | Select-String -Pattern 'error' -CaseSensitive:$false |
               Select-Object -First 60 | ForEach-Object { Write-Host $_.Line }
             Write-Host ""
-            Write-Host "################ PRIMI ERRORI CON IL FILE INTERESSATO ################"
-            Get-Content build.log |
-              Select-String -Pattern 'error C[0-9]{4}' |
-              Select-Object -First 10 |
-              ForEach-Object { Write-Host $_.Line }
-            Write-Host "#######################################################"
+            Write-Host "################ ULTIME 120 RIGHE (il guasto e' qui in mezzo) ################"
+            $start = [Math]::Max(0, $log.Count - 120)
+            $log[$start..($log.Count - 1)] | ForEach-Object { Write-Host $_ }
+            Write-Host "##############################################################################"
             exit $code
           }
           Write-Host "Compilazione completata."
@@ -334,9 +332,24 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: compile-log
           path: build.log
           if-no-files-found: ignore
+
+      - name: Cerca errori nei log allegati
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "=== file di log disponibili ==="
+          Get-ChildItem -Recurse -Include *.log,build.log -ErrorAction SilentlyContinue |
+            Select-Object FullName,Length | Format-Table -AutoSize | Out-String | Write-Host
+          foreach ($f in @("build.log","TBuild\prepare.log","prepare.log")) {
+            if (Test-Path $f) {
+              Write-Host "=== ERRORI IN $f ==="
+              Get-Content $f | Select-String -Pattern 'error C[0-9]{4}|error LNK[0-9]{4}|fatal error|ERRORE' |
+                Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
+            }
+          }
 
       - name: Raccogli l'eseguibile
         if: always()
@@ -378,11 +391,11 @@ jobs:
           path: artifacts/**
           if-no-files-found: warn
 
-      - name: Salva l'output del build (per diagnosi)
+      - name: Salva la configurazione CMake (per diagnosi)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: cmake-cache
           path: |
             TBuild/tdesktop/out/CMakeCache.txt
             TBuild/tdesktop/out/**/*.log
