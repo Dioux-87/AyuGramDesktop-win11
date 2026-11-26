@@ -564,8 +564,12 @@ void Application::startSettingsAndBackground() {
 	Local::rewriteSettingsIfNeeded();
 	Window::Theme::Background()->start();
 	checkSystemDarkMode();
+	// The Mica surface changes the global palette, so it has to be applied
+	// before the first window is created: a window built while the palette is
+	// still opaque would be painted with the opaque colors.
 	AyuFeatures::Windows11::ApplyInitialTheme();
 	AyuFeatures::Windows11::StartWatching();
+	AyuFeatures::Windows11::HandleThemeUpdate();
 	Ui::SetScreenReaderModeDisabled(
 		settings().readPref<bool>(kScreenReaderModeDisabledKey));
 }

@@ -7,8 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mainwidget.h"
 
-#include "ayu/features/windows11/windows11.h"
-
 #include "api/api_updates.h"
 #include "api/api_views.h"
 #include "data/components/scheduled_messages.h"
@@ -2551,13 +2549,6 @@ void MainWidget::showFinished() {
 void MainWidget::paintEvent(QPaintEvent *e) {
 	if (_background) {
 		checkChatBackground();
-	}
-	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// The default chat background fills the column with an opaque wall
-		// paper; over the Mica material we only paint the translucent tint so
-		// the system backdrop stays visible.
-		auto p = QPainter(this);
-		AyuFeatures::Windows11::FillBackground(p, e->rect());
 	}
 	if (_showAnimation) {
 		auto p = QPainter(this);

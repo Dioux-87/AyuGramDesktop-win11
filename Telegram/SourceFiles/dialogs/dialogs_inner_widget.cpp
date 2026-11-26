@@ -7,8 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
 
-#include "ayu/features/windows11/windows11.h"
-
 #include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/chat_search_empty.h"
 #include "dialogs/ui/chat_search_in.h"
@@ -2035,14 +2033,6 @@ void InnerWidget::paintPeerSearchResult(
 }
 
 QBrush InnerWidget::currentBg() const {
-	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// Translucent tint over the Mica material, the folder animation still
-		// blends towards the hovered list color.
-		return anim::brush(
-			AyuFeatures::Windows11::WindowBgTint(),
-			st::dialogsBgOver,
-			_childListShown.current().shown);
-	}
 	return anim::brush(
 		st::dialogsBg,
 		st::dialogsBgOver,

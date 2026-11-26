@@ -27,8 +27,19 @@ namespace AyuFeatures::Windows11 {
 // The translucent tint painted over the Mica backdrop for the current theme.
 [[nodiscard]] QColor WindowBgTint();
 
-// Paints the translucent Mica tint over the given rectangle. Does nothing
-// when the window is opaque, so callers can always call it before their own
+// Turns the background colors of the global palette (window, chat list, top
+// bar, boxes, menus, settings) into the translucent tint, or restores them.
+// This is the only way to get a real translucency: every widget that paints
+// with a style color follows the palette automatically, so there is no need to
+// patch the painting code of each of them. Returns true when the palette was
+// changed, so the caller knows a repaint is needed.
+bool ApplyTranslucentPalette(bool themeChanged);
+
+// Whether the translucent palette is currently applied.
+[[nodiscard]] bool PaletteIsTranslucent();
+
+// Paints the translucent Mica tint over the given rectangle. Does nothing when
+// the window is opaque, so callers can always call it before their own
 // painting.
 void FillBackground(QPainter &p, QRect rect);
 
@@ -54,9 +65,15 @@ void ApplyInitialTheme();
 // Re-picks the theme after the system color scheme changed.
 void ApplyThemeForSystemChange();
 
-// Recomputes the surface and the backdrop of all windows after the palette,
-// the wallpaper or the settings changed.
-void HandleThemeUpdate();
+// Recomputes the surface, the palette and the backdrop of all windows after
+// the theme, the wallpaper or the settings changed. "themeChanged" means that
+// the whole palette was replaced, so the translucent colors have to be applied
+// again instead of being restored.
+void HandleThemeUpdate(bool themeChanged = false);
+
+// The window became active or inactive: the material is shown only on the
+// active window, an inactive one is painted opaque.
+void HandleWindowActivation(bool active);
 
 // Forces a full repaint of every opened window.
 void ForceRepaint();
