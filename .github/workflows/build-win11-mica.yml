@@ -40,7 +40,7 @@ jobs:
   build:
     name: Windows x64 (Release)
     runs-on: windows-2022
-    timeout-minutes: 350
+    timeout-minutes: 420
     env:
       TDESKTOP_API_ID: '2040'
       TDESKTOP_API_HASH: 'b18441a1ff607e10a989891a5462e627'
@@ -286,6 +286,69 @@ jobs:
           }
           Write-Host "Prepara le librerie completato."
 
+      - name: Disattiva /MP (risolve C1060 / C1076 / C3859)
+        shell: pwsh
+        run: |
+          # =================================================================
+          # v22 - LA CORREZIONE DECISIVA, PRIMA DI "Configure"
+          # -----------------------------------------------------------------
+          # cmake_helpers/options_win.cmake contiene, dentro
+          # target_compile_options(common_options INTERFACE ...):
+          #
+          #       /MP     # Enable multi process build.
+          #
+          # Con /MP attivo, MSBuild raggruppa i file in batch e passa ~50
+          # sorgenti a UN SOLO cl.exe:
+          #       Compiling...   (112 di questi nel log della v21)
+          #       Generating Code...
+          # Quel processo compila tutto insieme e finisce la memoria:
+          #       92 x C1060  compiler is out of heap space
+          #      109 x C1076  compiler limit: internal heap limit reached
+          #      109 x C3859  Failed to create virtual memory for PCH
+          #
+          # /Zm400 non bastava: alza l'heap INTERNO di cl.exe, ma il processo
+          # resta limitato a ~4 GB. /MP e' la causa, /Zm e' solo un cerotto.
+          #
+          # Questo passo deve girare PRIMA di "Configure", perche' Configure
+          # genera i .vcxproj: se il flag viene tolto dopo, i file di progetto
+          # contengono gia' /MP e la compilazione lo usa lo stesso.
+          # =================================================================
+
+          $root = Join-Path $env:GITHUB_WORKSPACE "TBuild\tdesktop"
+          $found = @()
+          Get-ChildItem -Path $root -Recurse -Filter "options_win.cmake" -ErrorAction SilentlyContinue |
+            ForEach-Object { $found += $_.FullName }
+
+          if ($found.Count -eq 0) {
+            Write-Host "ERRORE: options_win.cmake non trovato sotto $root"
+            Write-Host "Contenuto di TBuild/tdesktop:"
+            Get-ChildItem $root -Directory | Select-Object -ExpandProperty Name | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+
+          foreach ($f in $found) {
+            Write-Host "--- $f"
+            $txt = Get-Content -LiteralPath $f -Raw
+            if ($txt -match '(?m)^\s*/MP\b') {
+              $txt = [regex]::Replace(
+                $txt,
+                '(?m)^(\s*)/MP(\s*#.*)?$',
+                '$1# /MP  # v22: disattivato (causava C1060/C1076/C3859)'
+              )
+              Set-Content -LiteralPath $f -Value $txt -NoNewline
+              Write-Host "    /MP COMMENTATO"
+            } else {
+              Write-Host "    /MP non presente o gia' commentato"
+            }
+            Select-String -LiteralPath $f -Pattern '/MP' |
+              ForEach-Object { Write-Host ("    ora: " + $_.Line.Trim()) }
+            if ($txt -match '(?m)^\s*/MP\b') {
+              Write-Host "    ERRORE: /MP e' ancora attivo dopo la modifica"
+              exit 1
+            }
+          }
+          Write-Host "Fatto: /MP disattivato in $($found.Count) file. Configure puo' partire."
+
       - name: Configure
         working-directory: TBuild/tdesktop/Telegram
         shell: cmd
@@ -308,74 +371,126 @@ jobs:
           }
           $sw = [Diagnostics.Stopwatch]::StartNew()
 
+          # ===============================================================
+          # v22 - RISOLVE ALLA RADICE IL C1060 / C1076 / C3859
           # ---------------------------------------------------------------
-          # v19 - limite di memoria del compilatore
-          # Il runner ha 16 GB di RAM e 4 core. Con 4 progetti in parallelo
-          # e cl.exe che a sua volta compila piu' file insieme (batch
-          # "Compiling... / Generating Code...") la RAM finisce e MSVC muore
-          # con C1060 (heap space) / C1076 / "paging file too small".
-          # Qui si attacca su tre fronti:
-          #   1) /m:2  -> al massimo 2 processi di MSBuild in parallelo
-          #   2) CL_MPCount=1 -> cl.exe compila un file per volta
-          #   3) _CL_="/Zm400" -> il limite di heap interno di cl.exe sale
-          #      (e' la variabile d'ambiente che cl.exe legge da solo)
-          # ---------------------------------------------------------------
+          # La v21 e' morta con 310 errori, TUTTI di memoria:
+          #    92 x C1060  compiler is out of heap space
+          #   109 x C1076  compiler limit: internal heap limit reached
+          #   109 x C3859  Failed to create virtual memory for PCH
+          # Il primo e' arrivato su passport_form_controller.cpp, che NON e'
+          # stato modificato: non e' un errore di codice, e' il compilatore
+          # che finisce la memoria.
+          #
+          # PERCHE' /Zm400 + CL_MPCount=1 NON BASTAVA
+          # /Zm alza solo l'heap INTERNO di cl.exe (il "small block heap"),
+          # ma su un runner da 16 GB ogni processo resta limitato a ~4 GB:
+          # passport_form_controller.cpp sfonda anche quello.
+          # /m:2 e CL_MPCount=1 limitano QUANTI processi partono, non quanto
+          # pesa ciascuno.
+          #
+          # LA CAUSA VERA (verificata nel sorgente)
+          # cmake_helpers/options_win.cmake mette "/MP" dentro
+          # target_compile_options(common_options INTERFACE ...). Non e' nel
+          # CMakeCache: e' compilato dentro il progetto generato. Con /MP
+          # attivo MSBuild usa i batch:
+          #     Compiling...  (112 di questi nel log v21)
+          #     <50 file passati a cl.exe in una volta>
+          #     Generating Code...
+          # cl.exe compila 50 unita' in un solo processo: la memoria non e'
+          # disponibile per UN file per volta ma per tutti insieme.
+          # Va tolto /MP dal file sorgente, non dal cache.
+          #
+          # LE QUATTRO CORREZIONI
+          # 1. options_win.cmake: "/MP" commentato  <- LA correzione decisiva
+          # 2. _CL_="/Zm800" (era 400): margine doppio sull'heap interno
+          # 3. /m:1 al posto di /m:2: un nodo MSBuild, molta meno RAM
+          # 4. parametri CMake azzerati esplicitamente, cosi' la prossima
+          #    run riparte pulita e senza residui dei tentativi precedenti
+          # Costo: piu' lento (5-6 ore, sotto il timeout di 350 minuti).
+          # =================================================================
+
           $env:CL_MPCount = "1"
           $env:PreferredToolArchitecture = "x64"
-          $env:_CL_ = "/Zm400"
+          $env:_CL_ = "/Zm800"
+          $env:MSBUILDDISABLENODEREUSE = "1"
 
-          # Stampa la memoria libera PRIMA, per avere un riferimento nel log
+          # /MP e' gia' stato commentato in options_win.cmake dal passo
+          # "Disattiva /MP", che gira PRIMA di Configure. Qui resta solo da
+          # verificare che il flag non sia finito nei progetti generati.
+          $proj = Get-ChildItem -Path $build -Recurse -Filter "Telegram.vcxproj" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($proj) {
+            $mp = Select-String -LiteralPath $proj.FullName -Pattern 'MultiProcessorCompilation'
+            if ($mp) {
+              foreach ($m in $mp) { Write-Host ("  vcxproj -> " + $m.Line.Trim()) }
+            } else {
+              Write-Host "  vcxproj: nessun MultiProcessorCompilation (ok)."
+            }
+          } else {
+            Write-Host "  ATTENZIONE: Telegram.vcxproj non trovato."
+          }
+
+          # --- 2) memoria libera prima ------------------------------------
           $os = Get-CimInstance Win32_OperatingSystem
           Write-Host ("RAM libera prima: {0:N1} GB su {1:N1} GB" -f ($os.FreePhysicalMemory/1MB), ($os.TotalVisibleMemorySize/1MB))
-          Write-Host "Impostazioni: /m:2 + CL_MPCount=1 + _CL_=/Zm400"
+          Write-Host "Impostazioni: /MP disattivato + /m:1 + CL_MPCount=1 + _CL_=/Zm800"
 
-          # Una sola riga / un array: in PowerShell il comando non continua
-          # sulla riga successiva (era il bug della v17).
+          # --- 3) build ----------------------------------------------------
           $cmakeArgs = @(
             "--build", $build,
             "--config", "Release",
             "--target", "Telegram",
             "--",
-            "/m:2",
+            "/m:1",
             "/p:CL_MPCount=1",
             "/p:UseMultiToolTask=false",
             "/p:BuildInParallel=false"
           )
           Write-Host ("COMANDO: cmake " + ($cmakeArgs -join " "))
-          & cmake @cmakeArgs 2>&1 | Tee-Object -FilePath build.log
+          & cmake @cmakeArgs *>&1 | Tee-Object -FilePath build.log | Out-Null
           $code = $LASTEXITCODE
+          $sw.Stop()
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
-          # ---------------------------------------------------------------
-          # PROVA nel log: cerca la riga di comando vera di cl.exe nel file
-          # .tlog di MSBuild. Serve a dimostrare se le opzioni sono arrivate.
-          # ---------------------------------------------------------------
+          # --- 4) memoria libera dopo -------------------------------------
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host ("RAM libera dopo: {0:N1} GB su {1:N1} GB" -f ($os.FreePhysicalMemory/1MB), ($os.TotalVisibleMemorySize/1MB))
+
+          # --- 5) prova che le opzioni siano arrivate a cl.exe -------------
           Write-Host ""
-          Write-Host "########## OPZIONI REALI PASSATE A cl.exe (dal file .tlog) ##########"
+          Write-Host "########## OPZIONI REALI PASSATE A cl.exe ##########"
           $tlogs = Get-ChildItem -Path $build -Recurse -Filter "CL.command.1.tlog" -ErrorAction SilentlyContinue
           if (-not $tlogs) {
-            Write-Host "NESSUN .tlog trovato: la compilazione non e' mai partita."
+            Write-Host "NESSUN .tlog trovato."
           } else {
             foreach ($t in $tlogs) {
-              Write-Host "--- $($t.FullName) ---"
-              # il .tlog e' UTF-16: leggerlo cosi' evita caratteri strani
-              $lines = Get-Content -LiteralPath $t.FullName -Encoding Unicode
+              $lines = Get-Content -LiteralPath $t.FullName -Encoding Unicode -ErrorAction SilentlyContinue
               $clLines = $lines | Where-Object { $_ -match 'cl\.exe' }
-              Write-Host ("righe di comando cl.exe trovate: {0}" -f $clLines.Count)
-              ($clLines | Select-Object -First 2) | ForEach-Object { Write-Host $_ }
+              Write-Host ("{0}: {1} righe cl.exe" -f $t.Name, $clLines.Count)
+              $zm = ($lines | Select-String -Pattern '/Zm\d+' -AllMatches).Matches.Value | Select-Object -Unique
+              $mp = ($lines | Select-String -Pattern '/MP\d*' -AllMatches).Matches.Value | Select-Object -Unique
+              Write-Host ("  /Zm: {0}" -f (@($zm) -join ', '))
+              Write-Host ("  /MP: {0}   <-- deve essere vuoto" -f (@($mp) -join ', '))
             }
           }
-          Write-Host "#####################################################################"
+          Write-Host "####################################################"
 
+          # --- 6) se fallisce, elenca gli errori ---------------------------
           if ($code -ne 0) {
             $log = Get-Content build.log
             Write-Host ""
-            Write-Host "################ ERRORI (primi 40) ################"
-            $log | Select-String -Pattern 'error [A-Z]+[0-9]+' -CaseSensitive:$false |
-              Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
+            Write-Host "################ CONTEGGIO ERRORI PER TIPO ################"
+            $log | Select-String -Pattern 'error ([A-Z]+[0-9]+)' -AllMatches |
+              ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
+              Group-Object | Sort-Object Count -Descending |
+              ForEach-Object { Write-Host ("  {0,5} x {1}" -f $_.Count, $_.Name) }
             Write-Host ""
-            Write-Host "################ ULTIME 60 RIGHE ################"
-            $start = [Math]::Max(0, $log.Count - 60)
+            Write-Host "################ PRIMI 15 ERRORI ################"
+            $log | Select-String -Pattern 'error [A-Z]+[0-9]+' -CaseSensitive:$false |
+              Select-Object -First 15 | ForEach-Object { Write-Host $_.Line }
+            Write-Host ""
+            Write-Host "################ ULTIME 40 RIGHE ################"
+            $start = [Math]::Max(0, $log.Count - 40)
             $log[$start..($log.Count - 1)] | ForEach-Object { Write-Host $_ }
             exit $code
           }
