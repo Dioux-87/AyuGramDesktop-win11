@@ -46,7 +46,14 @@ void FillBackground(QPainter &p, QRect rect);
 // Recomputes the cached surface state.
 void UpdateSurface();
 
+// Sets the Qt attributes that decide how the native window is composed. MUST
+// be called before the native window exists (MainWindow::initHook), because
+// changing them afterwards makes Qt recreate the window and the backdrop is
+// silently lost.
+void PrepareWindowSurface(not_null<QWidget*> window);
+
 // Applies (or removes) the backdrop and the matching window frame theme.
+// Safe to call at any time: it only talks to DWM.
 void ApplyBackdrop(not_null<QWidget*> window);
 
 // Re-applies the backdrop to every opened window.

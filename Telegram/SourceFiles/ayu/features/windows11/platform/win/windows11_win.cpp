@@ -103,6 +103,10 @@ bool Supported() {
 	return ::Platform::IsWindows11OrGreater();
 }
 
+bool MaterialSupported() {
+	return Supported() && (BuildNumber() >= kBackdropBuild);
+}
+
 bool TransparencyEnabled() {
 	auto value = DWORD(1);
 	return !ReadPersonalizeDword(L"EnableTransparency", value) || (value != 0);
@@ -113,7 +117,7 @@ bool SystemDarkTheme() {
 	return ReadPersonalizeDword(L"AppsUseLightTheme", value) && (value == 0);
 }
 
-bool ApplyBackdrop(not_null<QWidget*> widget, Backdrop backdrop) {
+bool ApplyBackdrop(not_null<QWidget*> widget, Surface surface) {
 	if (!Supported()) {
 		return false;
 	}
@@ -122,54 +126,93 @@ bool ApplyBackdrop(not_null<QWidget*> widget, Backdrop backdrop) {
 		return false;
 	}
 
-	// A translucent window is a *layered* window: only a layered window has its
-	// alpha channel honoured by the compositor, which is what lets the material
-	// painted by DWM behind the window show through the pixels Qt paints.
+	// ---------------------------------------------------------------------
+	// THE ONE THING THAT MATTERS: a layered window never gets a material.
+	// ---------------------------------------------------------------------
+	// DWM paints Mica for a window that it treats as an ordinary opaque
+	// window whose frame was extended into the client area. If the window
+	// carries WS_EX_LAYERED (per-pixel alpha), DWM composites the window over
+	// whatever is behind it instead of painting the material: the result is a
+	// see-through window with no blur, no tint and no texture, which looks
+	// broken rather than like Mica.
 	//
-	// Qt sets WS_EX_LAYERED by itself only when Qt::WA_TranslucentBackground is
-	// set before the native window exists, which cannot be the case here (the
-	// HWND is created before any of this runs), so the bit is changed directly.
-	// Without it DWM gets an opaque surface and the backdrop silently does
-	// nothing - which is exactly why the first build showed no effect.
-	const auto isTranslucent = (backdrop != Backdrop::None);
-	const auto style = ::GetWindowLongPtr(handle, GWL_EXSTYLE);
-	const auto wanted = isTranslucent
-		? (style | WS_EX_LAYERED)
-		: (style & ~WS_EX_LAYERED);
-	if (wanted != style) {
-		::SetWindowLongPtr(handle, GWL_EXSTYLE, wanted);
-	}
+	// The two previous builds set WS_EX_LAYERED *and* asked for a backdrop,
+	// so they asked for two incompatible compositions. The material was
+	// requested and silently never painted.
+	//
+	// So: WS_EX_LAYERED goes away for Material. It stays only for the
+	// Transparent fallback, and it is decided once, when the native window is
+	// created, never toggled later: Qt destroys and recreates the HWND when
+	// WA_TranslucentBackground changes on a live window, and every DWM call
+	// made against the old handle silently does nothing.
+	const auto wantsMaterial = (surface == Surface::Material);
+	const auto wantsTransparent = (surface == Surface::Transparent);
 
-	// The Qt side has to agree: a widget with WA_OpaquePaintEvent (or with the
-	// system background filled in) paints every pixel opaque and the layered
-	// window has no alpha to work with.
-	if (isTranslucent) {
-		widget->setAttribute(Qt::WA_TranslucentBackground, true);
-		widget->setAttribute(Qt::WA_NoSystemBackground, true);
-		widget->setAttribute(Qt::WA_OpaquePaintEvent, false);
-	} else {
-		widget->setAttribute(Qt::WA_TranslucentBackground, false);
-		widget->setAttribute(Qt::WA_NoSystemBackground, false);
-		widget->setAttribute(Qt::WA_OpaquePaintEvent, true);
+	auto style = ::GetWindowLongPtr(handle, GWL_EXSTYLE);
+	if (wantsMaterial || surface == Surface::Opaque) {
+		style &= ~WS_EX_LAYERED;
+	} else if (wantsTransparent) {
+		style |= WS_EX_LAYERED;
 	}
+	::SetWindowLongPtr(handle, GWL_EXSTYLE, style);
+
+	// Qt has to agree with the composition:
+	//  - Material: the widget must NOT be translucent for the native window
+	//    (that is what creates the layered window), but it must not paint an
+	//    opaque background either, otherwise the material is covered by a
+	//    solid rectangle. WA_NoSystemBackground + no OpaquePaintEvent is the
+	//    combination: Qt paints only what the widgets draw, and the tint
+	//    painted by MainWidget::paintEvent fills the rest.
+	//  - Transparent: per-pixel alpha is exactly what we want.
+	//  - Opaque: everything normal.
+	widget->setAttribute(
+		Qt::WA_TranslucentBackground,
+		wantsTransparent);
+	widget->setAttribute(
+		Qt::WA_NoSystemBackground,
+		wantsMaterial || wantsTransparent);
+	widget->setAttribute(
+		Qt::WA_OpaquePaintEvent,
+		surface == Surface::Opaque);
 
 	// Extending the frame into the whole client area is what makes DWM paint
-	// the system material behind the client area and not just the title bar.
-	const auto margins = isTranslucent
+	// the material behind the client area and not just behind the title bar.
+	const auto margins = (wantsMaterial || wantsTransparent)
 		? MARGINS{ -1, -1, -1, -1 }
 		: MARGINS{ 0, 0, 0, 0 };
 	::DwmExtendFrameIntoClientArea(handle, &margins);
 
-	if (BuildNumber() < kBackdropBuild) {
-		// Fallback for the original Windows 11 release (21H2): only the
-		// undocumented "Mica" flag exists there.
-		auto enabled = BOOL(
-			backdrop != Backdrop::None && TransparencyEnabled());
-		SetAttribute(widget, 1029 /* DWMWA_MICA_EFFECT */, enabled);
-		return true;
+	auto result = true;
+	if (!MaterialSupported()) {
+		// Windows 11 21H2: only the undocumented "Mica" boolean exists.
+		auto enabled = BOOL(wantsMaterial && TransparencyEnabled());
+		result = SetAttribute(widget, 1029 /* DWMWA_MICA_EFFECT */, enabled);
+	} else {
+		const auto type = int(wantsMaterial
+			? Backdrop::Mica
+			: Backdrop::None);
+		result = SetAttribute(widget, DWMWA_SYSTEMBACKDROP_TYPE, type);
 	}
-	auto type = int(backdrop);
-	return SetAttribute(widget, DWMWA_SYSTEMBACKDROP_TYPE, type);
+
+	// DWM does not always pick the attribute up until the non-client area is
+	// recomputed. A no-op SetWindowPos with SWP_FRAMECHANGED is the documented
+	// way to force that.
+	if (wantsMaterial) {
+		::SetWindowPos(
+			handle,
+			nullptr,
+			0,
+			0,
+			0,
+			0,
+			SWP_FRAMECHANGED
+				| SWP_NOMOVE
+				| SWP_NOSIZE
+				| SWP_NOZORDER
+				| SWP_NOACTIVATE
+				| SWP_NOOWNERZORDER);
+	}
+	return result;
 }
 
 void ApplyWindowTheme(not_null<QWidget*> widget, bool dark) {

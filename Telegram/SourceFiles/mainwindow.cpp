@@ -114,22 +114,28 @@ MainWindow::MainWindow(not_null<Window::Controller*> controller)
 }
 
 void MainWindow::updateMicaSurface() {
-	const auto translucent = AyuFeatures::Windows11::TranslucentWindow();
-	// The window background is opaque, unless the Mica material is used.
-	if (translucent) {
-		setAttribute(Qt::WA_TranslucentBackground, true);
-		setAttribute(Qt::WA_NoSystemBackground, true);
-		setAttribute(Qt::WA_OpaquePaintEvent, false);
-	} else {
-		setAttribute(Qt::WA_OpaquePaintEvent, true);
-		setAttribute(Qt::WA_NoSystemBackground, false);
-		setAttribute(Qt::WA_TranslucentBackground, false);
-	}
+	// IMPORTANT: WA_TranslucentBackground is NOT touched here, on purpose.
+	//
+	// Changing that attribute on a widget whose native window already exists
+	// makes Qt destroy and recreate the HWND. The window we are working on
+	// stops existing, every DwmSetWindowAttribute call made afterwards still
+	// returns S_OK while applying to a dead handle, and the result is a window
+	// that is see-through but has no material at all.
+	//
+	// The attribute that decides whether the window is layered is therefore set
+	// once, in MainWindow::initHook(), before the native window is created, by
+	// AyuFeatures::Windows11::PrepareWindowSurface(). Here only the DWM side is
+	// updated, which is safe at any time.
 	AyuFeatures::Windows11::ApplyBackdrop(this);
 	update();
 }
 
 void MainWindow::initHook() {
+	// The attributes have to be on the widget before the native window is
+	// created: Qt reads WA_TranslucentBackground at that moment to decide
+	// whether the window is layered, and a layered window can never show the
+	// Mica material.
+	AyuFeatures::Windows11::PrepareWindowSurface(this);
 	Platform::MainWindow::initHook();
 	QCoreApplication::instance()->installEventFilter(this);
 }

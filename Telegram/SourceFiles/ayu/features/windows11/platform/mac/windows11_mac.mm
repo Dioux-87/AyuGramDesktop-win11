@@ -12,6 +12,10 @@ bool Supported() {
 	return false;
 }
 
+bool MaterialSupported() {
+	return false;
+}
+
 bool TransparencyEnabled() {
 	return false;
 }
@@ -20,7 +24,7 @@ bool SystemDarkTheme() {
 	return false;
 }
 
-bool ApplyBackdrop(not_null<QWidget*>, Backdrop) {
+bool ApplyBackdrop(not_null<QWidget*>, Surface) {
 	return false;
 }
 

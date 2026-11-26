@@ -9199,4 +9199,4 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_InterfaceThemeDark" = "Dark";
 "ayu_InterfaceThemeDescription" = "The theme is applied to the whole interface. \"System\" follows the Windows light or dark setting and switches automatically.";
 "ayu_MicaEffect" = "Mica effect";
-"ayu_MicaEffectDescription" = "Windows 11 translucent material behind the window. The desktop shows through the chat list and the chat area, unless you set a custom chat background.";
+"ayu_MicaEffectDescription" = "Windows 11 translucent material behind the window. The desktop shows through the chat list and the chat area, unless you set a custom chat background. Restart AyuGram after changing this: the window has to be created again with the new material.";

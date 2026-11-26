@@ -10,7 +10,6 @@
 #include "ayu/features/windows11/platform/platform_windows11.h"
 #include "core/application.h"
 #include "core/core_settings.h"
-#include "logs.h"
 #include "ui/style/style_core_palette.h"
 #include "window/themes/window_theme.h"
 #include "window/window_controller.h"
@@ -35,11 +34,22 @@ rpl::lifetime Lifetime;
 
 InterfaceTheme Applied = InterfaceTheme::System;
 
-// Whether the window the user is looking at is active. An inactive window is
-// painted completely opaque, as Windows does with its own apps: a translucent
-// window behind another window is only harder to read, and Qt would have to
-// keep repainting a surface nobody is looking at.
+// Whether the window the user is looking at is active. This no longer decides
+// the surface: it only tells the backdrop code whether DWM should draw the
+// material in its active or inactive tint. Windows itself flattens the
+// material of an inactive window; there is nothing to switch, and switching
+// it is what used to destroy the native window.
 bool ActiveWindow = true;
+
+// The composition is fixed for the lifetime of the process. See the long
+// comment in TranslucentWindow().
+Platform::Surface SessionSurface = Platform::Surface::Opaque;
+bool SessionSurfaceDecided = false;
+bool SessionBackgroundChecked = false;
+bool SessionDefaultBackground = true;
+
+// Defined below; used by the activation filter, which must only repaint.
+void ForceRepaint();
 
 // The colors that make the "backgrounds" of the whole interface. In the
 // default theme they all point to the window color, so making them translucent
@@ -87,9 +97,14 @@ std::optional<QByteArray> SavedPalette;
 // The tint of the material. It follows the theme, so the text stays readable
 // while the desktop is still visible through the window.
 [[nodiscard]] QColor TintFor(bool night) {
+	// The tint sits ON TOP of the material DWM paints, so it has to leave it
+	// visible. The previous values (alpha 204 / 208) covered it almost
+	// completely: with them the window looked like a flat, slightly
+	// see-through panel and the Mica texture was invisible. Unigram uses
+	// roughly three quarters of opacity for the same reason.
 	return night
-		? QColor(32, 32, 32, 204)
-		: QColor(246, 246, 246, 208);
+		? QColor(32, 32, 32, 170)
+		: QColor(246, 246, 246, 175);
 }
 
 [[nodiscard]] InterfaceTheme InterfaceThemeFromSettings() {
@@ -169,7 +184,9 @@ private:
 			return;
 		}
 		ActiveWindow = active;
-		HandleThemeUpdate();
+		// Only a repaint: the surface and the palette must not change here,
+		// or the native window is recreated and the material is lost.
+		ForceRepaint();
 	}
 
 };
@@ -201,8 +218,40 @@ bool MicaEnabled() {
 	return Platform::TransparencyEnabled();
 }
 
+Platform::Surface WantedSurface() {
+	// On Windows 11 22H2 and above the material is painted by DWM, so the
+	// window must be an ordinary (not layered) window. Below that build the
+	// attribute does not exist and the only thing left is a layered window,
+	// which shows the desktop through the window with no material: that is
+	// still preferable to an opaque window, but it is not Mica.
+	if (!MicaEnabled()) {
+		return Platform::Surface::Opaque;
+	}
+	return Platform::MaterialSupported()
+		? Platform::Surface::Material
+		: Platform::Surface::Transparent;
+}
+
 bool TranslucentWindow() {
-	if (!MicaEnabled() || !ActiveWindow) {
+	if (!MicaEnabled()) {
+		return false;
+	}
+	// The surface is decided ONCE, when the first window is created, and this
+	// is the reason: a layered window and a Mica window are two different
+	// windows for DWM. Switching between them means changing
+	// WA_TranslucentBackground on a live widget, and Qt reacts by destroying
+	// and recreating the native window. Every DWM call made against the old
+	// handle still returns S_OK while doing nothing at all, which is exactly
+	// how "the windows are transparent but there is no material" happens.
+	//
+	// The old code switched the surface on every window activation, so the
+	// window was recreated on every focus change and the material was lost
+	// for good. Now the answer cannot change while the window lives.
+	if (!SessionSurfaceDecided) {
+		SessionSurfaceDecided = true;
+		SessionSurface = WantedSurface();
+	}
+	if (SessionSurface == Platform::Surface::Opaque) {
 		return false;
 	}
 	// The material needs a surface that is not already filled with a picture:
@@ -210,7 +259,13 @@ bool TranslucentWindow() {
 	// background, and painting the material behind an image would only make
 	// the text unreadable. With the default background of either theme there
 	// is nothing to lose, so the material takes over.
-	return !Window::Theme::IsNonDefaultBackground();
+	//
+	// This is read once, for the same reason as above.
+	if (!SessionBackgroundChecked) {
+		SessionBackgroundChecked = true;
+		SessionDefaultBackground = !Window::Theme::IsNonDefaultBackground();
+	}
+	return SessionDefaultBackground;
 }
 
 QColor WindowBgTint() {
@@ -270,6 +325,30 @@ void UpdateSurface() {
 	// night mode changed. Nothing else is cached here.
 }
 
+void PrepareWindowSurface(not_null<QWidget*> window) {
+	// Only the Qt side: the native window does not exist yet, so there is no
+	// handle to hand to DWM. ApplyBackdrop() does that afterwards.
+	//
+	// What matters here is WA_TranslucentBackground:
+	//   Material  -> false. The window must stay an ordinary window, because
+	//                only an ordinary window gets the DWM material.
+	//   Transparent -> true. Classic per-pixel alpha for old Windows builds.
+	//   Opaque    -> false.
+	// WA_NoSystemBackground keeps Qt from filling the background with a solid
+	// colour, which would cover the material.
+	const auto surface = WantedSurface();
+	const auto transparent = (surface == Platform::Surface::Transparent);
+	window->setAttribute(Qt::WA_TranslucentBackground, transparent);
+	window->setAttribute(
+		Qt::WA_NoSystemBackground,
+		(surface != Platform::Surface::Opaque));
+	window->setAttribute(
+		Qt::WA_OpaquePaintEvent,
+		(surface == Platform::Surface::Opaque));
+	LOG(("Windows11: window surface prepared, material available: %1."
+		).arg(Logs::b(Platform::MaterialSupported())));
+}
+
 void ApplyBackdrop(not_null<QWidget*> window) {
 	if (!Platform::Supported()) {
 		return;
@@ -281,10 +360,14 @@ void ApplyBackdrop(not_null<QWidget*> window) {
 	// system would get a light material behind a dark window.
 	Platform::ApplyWindowTheme(window, Window::Theme::IsNightMode());
 
+	// TranslucentWindow() freezes the choice on its first call, so reading it
+	// here first guarantees that SessionSurface is initialised before it is
+	// used, and that the choice never changes afterwards: the native handle is
+	// never recreated behind our back.
 	const auto translucent = TranslucentWindow();
 	Platform::ApplyBackdrop(
 		window,
-		translucent ? Platform::Backdrop::Mica : Platform::Backdrop::None);
+		translucent ? SessionSurface : Platform::Surface::Opaque);
 }
 
 void ApplyBackdropToAllWindows() {
@@ -315,18 +398,10 @@ void ApplyInitialTheme() {
 	const auto theme = InterfaceThemeFromSettings();
 	Applied = theme;
 	SyncSystemWatch(theme == InterfaceTheme::System);
-	// A theme change early in the startup path rewrites the theme and the
-	// background of the local storage. Everything it needs is ready by the
-	// time this runs (it is called after the domain was started and the first
-	// window was shown), but a failure here must never keep the app from
-	// opening: the fallback is a window with the theme the user already had.
-	LOG(("Windows11: applying the interface theme on startup."));
 	if (theme != InterfaceTheme::System) {
 		SwitchNightMode(NightModeFor(theme));
 	}
 	UpdateSurface();
-	LOG(("Windows11: interface theme applied, night mode is %1."
-		).arg(Logs::b(Window::Theme::IsNightMode())));
 }
 
 void ApplyThemeForSystemChange() {
@@ -337,10 +412,6 @@ void ApplyThemeForSystemChange() {
 }
 
 void HandleThemeUpdate(bool themeChanged) {
-	LOG(("Windows11: handle theme update, changed: %1, mica: %2, translucent: %3."
-		).arg(Logs::b(themeChanged)
-		).arg(Logs::b(MicaEnabled())
-		).arg(Logs::b(TranslucentWindow())));
 	UpdateSurface();
 	// The palette first: if the colors changed, the windows have to be
 	// repainted with the new ones, and the backdrop has to be rebuilt after
@@ -357,8 +428,16 @@ void HandleThemeUpdate(bool themeChanged) {
 }
 
 void HandleWindowActivation(bool active) {
+	if (ActiveWindow == active) {
+		return;
+	}
 	ActiveWindow = active;
-	HandleThemeUpdate();
+	// The surface does NOT change here. An inactive window keeps its Mica:
+	// DWM itself flattens the material of a window it considers inactive, so
+	// the only thing to do is let it repaint. Rebuilding the surface here is
+	// what used to destroy and recreate the native window on every focus
+	// change, losing the material for good.
+	ForceRepaint();
 }
 
 void ForceRepaint() {
@@ -383,13 +462,16 @@ void StartWatching() {
 		ApplyInterfaceTheme();
 	}, Lifetime);
 
-	// The Mica toggle was switched on or off.
-	AyuSettings::getInstance().micaEffectChanges(
-	) | rpl::skip(1) | rpl::on_next([=] {
-		// The toggle changes TranslucentWindow(), so the palette goes back to
-		// its opaque state or turns translucent again in HandleThemeUpdate().
-		HandleThemeUpdate();
-	}, Lifetime);
+	// The Mica toggle changed: the surface is fixed for the lifetime of the
+	// process, so nothing is rebuilt here. Turning the material on or off
+	// takes effect at the next launch (see the note in TranslucentWindow),
+	// and the user is told so in the settings description.
+	//
+	// Rebuilding it live would mean toggling WA_TranslucentBackground on a
+	// live widget: Qt destroys and recreates the native window, the backdrop
+	// is lost, and the result is a see-through window with no material.
+	LOG(("Windows11: the Mica setting changed, the surface is applied on "
+		"the next launch."));
 
 	// A wallpaper or a theme was applied, so the palette changed: the
 	// translucent colors have to be applied again on top of the new ones.

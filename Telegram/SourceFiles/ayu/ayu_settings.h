@@ -736,10 +736,7 @@ private:
 	rpl::variable<bool> _singleCornerRadius = false;
 	rpl::variable<bool> _streamerMode = false;
 	rpl::variable<InterfaceTheme> _interfaceTheme = InterfaceTheme::System;
-	// Off by default: the Mica surface is an opt-in. An opaque window that
-	// always opens is better than a translucent one that can keep the app
-	// from starting.
-	rpl::variable<bool> _micaEffect = false;
+	rpl::variable<bool> _micaEffect = true;
 
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
