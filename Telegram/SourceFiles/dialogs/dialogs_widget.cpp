@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_widget.h"
 
-#include "ayu/features/windows11/windows11.h"
 
 #include "base/call_delayed.h"
 #include "base/qt/qt_key_modifiers.h"
@@ -4993,10 +4992,10 @@ void Widget::paintEvent(QPaintEvent *e) {
 		_showAnimation->paintContents(p);
 		return;
 	}
-	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// Paint the translucent tint first, the rows are drawn on top of it.
-		AyuFeatures::Windows11::FillBackground(p, r);
-	}
+	// No Mica tint here: this widget paints over the surface where the
+	// material is visible, and a flat tint would cover it for the whole height
+	// of the list. The translucency comes from the palette (dialogsBg has an
+	// alpha now), which is what lets the material show through the rows.
 	const auto bg = anim::brush(
 		st::dialogsBg,
 		st::dialogsBgOver,

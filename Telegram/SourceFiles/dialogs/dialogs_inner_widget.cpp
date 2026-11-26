@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
 
-#include "ayu/features/windows11/windows11.h"
 
 #include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/chat_search_empty.h"
@@ -2035,14 +2034,11 @@ void InnerWidget::paintPeerSearchResult(
 }
 
 QBrush InnerWidget::currentBg() const {
-	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// Translucent tint over the Mica material, the folder animation still
-		// blends towards the hovered list color.
-		return anim::brush(
-			AyuFeatures::Windows11::WindowBgTint(),
-			st::dialogsBgOver,
-			_childListShown.current().shown);
-	}
+	// NOTE: no Mica tint here. This widget is a child of the window, so it
+	// paints *over* the surface where the material is visible: a flat tint
+	// would cover the material for the whole height of the list. The palette
+	// already makes dialogsBg translucent, and that colour is what lets the
+	// material show through the rows.
 	return anim::brush(
 		st::dialogsBg,
 		st::dialogsBgOver,

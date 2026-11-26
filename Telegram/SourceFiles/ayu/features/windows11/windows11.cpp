@@ -10,6 +10,7 @@
 #include "ayu/features/windows11/platform/platform_windows11.h"
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "logs.h"
 #include "ui/style/style_core_palette.h"
 #include "window/themes/window_theme.h"
 #include "window/window_controller.h"
@@ -48,7 +49,8 @@ bool SessionSurfaceDecided = false;
 bool SessionBackgroundChecked = false;
 bool SessionDefaultBackground = true;
 
-// Defined below; used by the activation filter, which must only repaint.
+// Defined below in this namespace; used by the activation filter, which must
+// only repaint. Declared here so the filter can call it.
 void ForceRepaint();
 
 // The colors that make the "backgrounds" of the whole interface. In the
@@ -69,11 +71,16 @@ constexpr auto kTranslucentColors = std::array{
 	"dialogsBgOver",
 	// Chat view.
 	"topBarBg",
-	// Boxes (dialogs) and the layer behind them.
-	"boxBg",
-	"boxSearchBg",
-	"boxDividerBg",
 	// Menus and tooltips.
+	//
+	// The box colors are deliberately NOT here (boxBg, boxSearchBg,
+	// boxDividerBg). A box is not a native window: Ui::LayerStackWidget draws
+	// it as a child of the main window, over the chat. Making its background
+	// translucent means showing the chat through the box itself, which is what
+	// the screenshot showed: a see-through panel, not a material. The Mica
+	// exists only behind the *window*, and a child widget cannot have its own
+	// material from DWM. Boxes therefore stay opaque panels, which is also how
+	// they look in a native Windows 11 app.
 	"menuBg",
 	"menuBgOver",
 	"menuBgRipple",
@@ -81,10 +88,14 @@ constexpr auto kTranslucentColors = std::array{
 	// Emoji and stickers panel.
 	"emojiPanBg",
 	"emojiPanHeaderBg",
-	// Shared media, profile, contacts, onboarding and search results.
-	"contactsBg",
-	"contactsBgOver",
-	"introBg",
+	// Shared media, profile and the search results bar around the chat.
+	//
+	// "contactsBg" and "contactsBgOver" are deliberately NOT here: they are
+	// the background of the rows inside a box (shared media, profile, member
+	// lists). A box is drawn as a child widget over the chat, so a
+	// translucent row background shows the chat through the box instead of a
+	// material. The box keeps its own opaque background, which is what a
+	// native Windows 11 app does too.
 	"searchedBarBg",
 };
 
@@ -207,18 +218,13 @@ void EnsureActivationFilter(not_null<QWidget*> window) {
 	FilteredWindows.push_back(window.get());
 }
 
-} // namespace
-
-bool MicaEnabled() {
-	if (!AyuSettings::getInstance().micaEffect()) {
-		return false;
-	} else if (!Platform::Supported()) {
-		return false;
-	}
-	return Platform::TransparencyEnabled();
+void ForceRepaint() {
+	ForEachWindowWidget([](not_null<QWidget*> window) {
+		window->update();
+	});
 }
 
-Platform::Surface WantedSurface() {
+[[nodiscard]] Platform::Surface WantedSurface() {
 	// On Windows 11 22H2 and above the material is painted by DWM, so the
 	// window must be an ordinary (not layered) window. Below that build the
 	// attribute does not exist and the only thing left is a layered window,
@@ -230,6 +236,17 @@ Platform::Surface WantedSurface() {
 	return Platform::MaterialSupported()
 		? Platform::Surface::Material
 		: Platform::Surface::Transparent;
+}
+
+} // namespace
+
+bool MicaEnabled() {
+	if (!AyuSettings::getInstance().micaEffect()) {
+		return false;
+	} else if (!Platform::Supported()) {
+		return false;
+	}
+	return Platform::TransparencyEnabled();
 }
 
 bool TranslucentWindow() {
@@ -315,9 +332,7 @@ bool PaletteIsTranslucent() {
 }
 
 void FillBackground(QPainter &p, QRect rect) {
-	if (TranslucentWindow()) {
-		p.fillRect(rect, WindowBgTint());
-	}
+	p.fillRect(rect, WindowBgTint());
 }
 
 void UpdateSurface() {
@@ -336,15 +351,31 @@ void PrepareWindowSurface(not_null<QWidget*> window) {
 	//   Opaque    -> false.
 	// WA_NoSystemBackground keeps Qt from filling the background with a solid
 	// colour, which would cover the material.
+	//
+	// This is the surface of THIS window, which is why it does not go through
+	// SessionSurface: that one belongs to the main window (a popup has no
+	// dialog background of its own and can always take the material).
 	const auto surface = WantedSurface();
+	const auto opaque = (surface == Platform::Surface::Opaque);
 	const auto transparent = (surface == Platform::Surface::Transparent);
-	window->setAttribute(Qt::WA_TranslucentBackground, transparent);
-	window->setAttribute(
-		Qt::WA_NoSystemBackground,
-		(surface != Platform::Surface::Opaque));
-	window->setAttribute(
-		Qt::WA_OpaquePaintEvent,
-		(surface == Platform::Surface::Opaque));
+
+	// Qt::WA_TranslucentBackground is NOT forced to true for a material
+	// window, and that is the whole point: on Windows that attribute is what
+	// makes the native window layered, and a layered window never gets the
+	// Mica material from DWM. A material window is an ordinary window, and the
+	// widgets paint the translucent tint themselves.
+	//
+	// - Material: leave the attribute as the caller set it (false in the main
+	//   window), only stop Qt from filling the background opaquely.
+	// - Transparent: on, classic per-pixel alpha.
+	// - Opaque: off.
+	if (transparent) {
+		window->setAttribute(Qt::WA_TranslucentBackground, true);
+	} else if (opaque) {
+		window->setAttribute(Qt::WA_TranslucentBackground, false);
+	}
+	window->setAttribute(Qt::WA_NoSystemBackground, !opaque);
+	window->setAttribute(Qt::WA_OpaquePaintEvent, opaque);
 	LOG(("Windows11: window surface prepared, material available: %1."
 		).arg(Logs::b(Platform::MaterialSupported())));
 }
@@ -438,12 +469,6 @@ void HandleWindowActivation(bool active) {
 	// what used to destroy and recreate the native window on every focus
 	// change, losing the material for good.
 	ForceRepaint();
-}
-
-void ForceRepaint() {
-	ForEachWindowWidget([](not_null<QWidget*> window) {
-		window->update();
-	});
 }
 
 void StartWatching() {

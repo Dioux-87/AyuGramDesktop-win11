@@ -2553,9 +2553,12 @@ void MainWidget::paintEvent(QPaintEvent *e) {
 		checkChatBackground();
 	}
 	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// The default chat background fills the column with an opaque wall
-		// paper; over the Mica material we only paint the translucent tint so
-		// the system backdrop stays visible.
+		// MainWidget is the window content: painting here IS painting the
+		// window background, so this is the one place where the tint belongs.
+		// It would not be needed at all for a plain Mica window (DWM paints
+		// the material and the palette is already translucent), but it is what
+		// keeps the material from being replaced by a stale frame while the
+		// child widgets repaint.
 		auto p = QPainter(this);
 		AyuFeatures::Windows11::FillBackground(p, e->rect());
 	}

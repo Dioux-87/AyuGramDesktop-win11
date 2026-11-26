@@ -11,6 +11,7 @@
 #include "base/platform/base_platform_info.h"
 
 #include <QtCore/QOperatingSystemVersion>
+#include <QtGui/QWindow>
 
 #include <windows.h>
 #include <dwmapi.h>
@@ -59,7 +60,22 @@ constexpr auto kBackdropBuild = 22621;
 }
 
 [[nodiscard]] HWND HandleFromWidget(not_null<QWidget*> widget) {
-	return reinterpret_cast<HWND>(widget->winId());
+	// winId() is deliberately NOT used here.
+	//
+	// QWidget::winId() *creates* the native window when it does not exist yet.
+	// On Windows the platform plugin may then have to recreate it (for example
+	// after the widget attributes change), and the recreation destroys the
+	// handle DWM was configured for. Every DwmSetWindowAttribute call against
+	// the destroyed handle still returns S_OK while doing nothing at all.
+	//
+	// Reading the handle only from a window that already exists avoids that
+	// completely: windowHandle() is not null only once the native window is
+	// there, and internalWinId() never creates anything.
+	const auto window = widget->windowHandle();
+	if (window) {
+		return reinterpret_cast<HWND>(window->winId());
+	}
+	return reinterpret_cast<HWND>(widget->internalWinId());
 }
 
 template <typename Value>

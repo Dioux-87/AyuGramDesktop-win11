@@ -38,9 +38,13 @@ bool ApplyTranslucentPalette(bool themeChanged);
 // Whether the translucent palette is currently applied.
 [[nodiscard]] bool PaletteIsTranslucent();
 
-// Paints the translucent Mica tint over the given rectangle. Does nothing when
-// the window is opaque, so callers can always call it before their own
-// painting.
+// Paints the translucent Mica tint over the given rectangle.
+//
+// It paints a FLAT tint, so it belongs to the window background only: the
+// tint is what the Mica material is seen through. Painting it over a child
+// widget would hide the material behind a flat colour, which is exactly the
+// "transparent but no material" look. Callers must therefore skip it for
+// child widgets (see the comments at the call sites).
 void FillBackground(QPainter &p, QRect rect);
 
 // Recomputes the cached surface state.
@@ -55,6 +59,7 @@ void PrepareWindowSurface(not_null<QWidget*> window);
 // Applies (or removes) the backdrop and the matching window frame theme.
 // Safe to call at any time: it only talks to DWM.
 void ApplyBackdrop(not_null<QWidget*> window);
+
 
 // Re-applies the backdrop to every opened window.
 void ApplyBackdropToAllWindows();

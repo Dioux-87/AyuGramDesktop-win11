@@ -7,7 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_widget.h"
 
-#include "ayu/features/windows11/windows11.h"
 
 #include "api/api_compose_with_ai.h"
 #include "api/api_editing.h"
@@ -11622,17 +11621,20 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 		updateListSize();
 	}
 
-	if (!AyuFeatures::Windows11::TranslucentWindow()) {
-		Window::SectionWidget::PaintBackground(
-			controller(),
-			controller()->currentChatTheme(),
-			this,
-			e->rect());
-	} else {
-		// Keep the translucent Mica surface visible behind the messages.
-		Painter p(this);
-		AyuFeatures::Windows11::FillBackground(p, e->rect());
-	}
+	// The chat background is painted as usual, ALWAYS.
+	//
+	// It used to be replaced by the Mica tint when the material was on, and
+	// that was wrong: this widget is a child of the window, so it paints over
+	// the surface where the material is visible. Replacing the chat background
+	// with a flat translucent tint covered the material for the whole chat
+	// area, and the messages ended up floating on a colour with the desktop
+	// shimmering through. With the default background there is nothing to
+	// paint at all (the palette is translucent), so the material simply shows.
+	Window::SectionWidget::PaintBackground(
+		controller(),
+		controller()->currentChatTheme(),
+		this,
+		e->rect());
 
 	Painter p(this);
 	const auto clip = e->rect();
