@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_widget.h"
 
+#include "ayu/features/windows11/windows11.h"
+
 #include "base/call_delayed.h"
 #include "base/qt/qt_key_modifiers.h"
 #include "base/options.h"
@@ -4990,6 +4992,10 @@ void Widget::paintEvent(QPaintEvent *e) {
 	if (_showAnimation) {
 		_showAnimation->paintContents(p);
 		return;
+	}
+	if (AyuFeatures::Windows11::TranslucentWindow()) {
+		// Paint the translucent tint first, the rows are drawn on top of it.
+		AyuFeatures::Windows11::FillBackground(p, r);
 	}
 	const auto bg = anim::brush(
 		st::dialogsBg,

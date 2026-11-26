@@ -449,6 +449,12 @@ void Application::run() {
 
 	startMediaView();
 
+	// Now the settings are written and the first window is shown, so the
+	// Windows 11 surface can be applied. Doing it earlier writes the theme and
+	// the background while the local storage still forbids it.
+	AyuFeatures::Windows11::ApplyInitialTheme();
+	AyuFeatures::Windows11::HandleThemeUpdate();
+
 	DEBUG_LOG(("Application Info: showing."));
 	_lastActivePrimaryWindow->finishFirstShow();
 
@@ -564,14 +570,18 @@ void Application::startSettingsAndBackground() {
 	Local::rewriteSettingsIfNeeded();
 	Window::Theme::Background()->start();
 	checkSystemDarkMode();
-	// The Mica surface changes the global palette, so it has to be applied
-	// before the first window is created: a window built while the palette is
-	// still opaque would be painted with the opaque colors.
-	AyuFeatures::Windows11::ApplyInitialTheme();
-	AyuFeatures::Windows11::StartWatching();
-	AyuFeatures::Windows11::HandleThemeUpdate();
 	Ui::SetScreenReaderModeDisabled(
 		settings().readPref<bool>(kScreenReaderModeDisabledKey));
+	// The Windows 11 watchers are installed only here. They must not be
+	// installed before, because the very first notification they receive is
+	// the palette of the background that has just been started, and reacting
+	// to it at this point writes the background settings before
+	// rewriteSettingsIfNeeded() has allowed it (assertion in
+	// localstorage.cpp: "Expects(_settingsWriteAllowed)").
+	//
+	// The interface theme is applied later, when the first window exists: see
+	// the call to ApplyInitialTheme() in Application::start().
+	AyuFeatures::Windows11::StartWatching();
 }
 
 void Application::checkSystemDarkMode() {

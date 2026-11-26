@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_widget.h"
 
+#include "ayu/features/windows11/windows11.h"
+
 #include "api/api_compose_with_ai.h"
 #include "api/api_editing.h"
 #include "api/api_bot.h"
@@ -218,7 +220,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMimeData>
 
 // AyuGram includes
-#include "ayu/features/windows11/windows11.h"
 #include "ayu/ayu_settings.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
@@ -11621,20 +11622,16 @@ void HistoryWidget::paintEvent(QPaintEvent *e) {
 		updateListSize();
 	}
 
-	if (AyuFeatures::Windows11::TranslucentWindow()) {
-		// Over the Mica material the chat area paints only the translucent
-		// tint: the default wall paper is not drawn at all, so the material
-		// behind the window is what the messages sit on. A custom wall paper
-		// or a chat theme keeps its own background (TranslucentWindow() is
-		// false in that case).
-		Painter p(this);
-		AyuFeatures::Windows11::FillBackground(p, e->rect());
-	} else {
+	if (!AyuFeatures::Windows11::TranslucentWindow()) {
 		Window::SectionWidget::PaintBackground(
 			controller(),
 			controller()->currentChatTheme(),
 			this,
 			e->rect());
+	} else {
+		// Keep the translucent Mica surface visible behind the messages.
+		Painter p(this);
+		AyuFeatures::Windows11::FillBackground(p, e->rect());
 	}
 
 	Painter p(this);

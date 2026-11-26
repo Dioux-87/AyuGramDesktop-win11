@@ -10,6 +10,7 @@
 #include "ayu/features/windows11/platform/platform_windows11.h"
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "logs.h"
 #include "ui/style/style_core_palette.h"
 #include "window/themes/window_theme.h"
 #include "window/window_controller.h"
@@ -314,10 +315,18 @@ void ApplyInitialTheme() {
 	const auto theme = InterfaceThemeFromSettings();
 	Applied = theme;
 	SyncSystemWatch(theme == InterfaceTheme::System);
+	// A theme change early in the startup path rewrites the theme and the
+	// background of the local storage. Everything it needs is ready by the
+	// time this runs (it is called after the domain was started and the first
+	// window was shown), but a failure here must never keep the app from
+	// opening: the fallback is a window with the theme the user already had.
+	LOG(("Windows11: applying the interface theme on startup."));
 	if (theme != InterfaceTheme::System) {
 		SwitchNightMode(NightModeFor(theme));
 	}
 	UpdateSurface();
+	LOG(("Windows11: interface theme applied, night mode is %1."
+		).arg(Logs::b(Window::Theme::IsNightMode())));
 }
 
 void ApplyThemeForSystemChange() {
@@ -328,6 +337,10 @@ void ApplyThemeForSystemChange() {
 }
 
 void HandleThemeUpdate(bool themeChanged) {
+	LOG(("Windows11: handle theme update, changed: %1, mica: %2, translucent: %3."
+		).arg(Logs::b(themeChanged)
+		).arg(Logs::b(MicaEnabled())
+		).arg(Logs::b(TranslucentWindow())));
 	UpdateSurface();
 	// The palette first: if the colors changed, the windows have to be
 	// repainted with the new ones, and the backdrop has to be rebuilt after

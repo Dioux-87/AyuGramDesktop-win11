@@ -114,11 +114,17 @@ MainWindow::MainWindow(not_null<Window::Controller*> controller)
 }
 
 void MainWindow::updateMicaSurface() {
-	// The window attributes (WA_TranslucentBackground and the WS_EX_LAYERED
-	// bit) are handled by the Windows 11 platform code, together with the
-	// backdrop: they have to change at the same time, otherwise the window is
-	// translucent while the material is off (a see-through hole) or opaque
-	// while the material is on (no effect at all).
+	const auto translucent = AyuFeatures::Windows11::TranslucentWindow();
+	// The window background is opaque, unless the Mica material is used.
+	if (translucent) {
+		setAttribute(Qt::WA_TranslucentBackground, true);
+		setAttribute(Qt::WA_NoSystemBackground, true);
+		setAttribute(Qt::WA_OpaquePaintEvent, false);
+	} else {
+		setAttribute(Qt::WA_OpaquePaintEvent, true);
+		setAttribute(Qt::WA_NoSystemBackground, false);
+		setAttribute(Qt::WA_TranslucentBackground, false);
+	}
 	AyuFeatures::Windows11::ApplyBackdrop(this);
 	update();
 }
