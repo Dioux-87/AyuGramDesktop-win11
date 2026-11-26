@@ -307,42 +307,76 @@ jobs:
             throw "CMakeCache.txt non trovato in $build"
           }
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          # 4 core, 16 GB di RAM. Il problema del C1060 era il PARALLELISMO A
-          # DUE LIVELLI (4 progetti x /MP4 = fino a 16 cl.exe insieme).
-          # Qui: al massimo 4 processi cl.exe, uno per core.
+
+          # ---------------------------------------------------------------
+          # v19 - limite di memoria del compilatore
+          # Il runner ha 16 GB di RAM e 4 core. Con 4 progetti in parallelo
+          # e cl.exe che a sua volta compila piu' file insieme (batch
+          # "Compiling... / Generating Code...") la RAM finisce e MSVC muore
+          # con C1060 (heap space) / C1076 / "paging file too small".
+          # Qui si attacca su tre fronti:
+          #   1) /m:2  -> al massimo 2 processi di MSBuild in parallelo
+          #   2) CL_MPCount=1 -> cl.exe compila un file per volta
+          #   3) _CL_="/Zm400" -> il limite di heap interno di cl.exe sale
+          #      (e' la variabile d'ambiente che cl.exe legge da solo)
+          # ---------------------------------------------------------------
           $env:CL_MPCount = "1"
           $env:PreferredToolArchitecture = "x64"
-          # /Zm600: raddoppia i limiti di memoria del compilatore (risolve i
-          # C1076/C3859 sui file di precompiled header). /MP1: un file per
-          # processo. Una sola riga: in PowerShell il comando NON prosegue
-          # sulla riga successiva.
-          $env:_CL_ = "/Zm600 /MP1"
-          Write-Host "MSBuild /m:4 + CL_MPCount=1 + /Zm600 (4 compilazioni, piu' memoria per processo)"
+          $env:_CL_ = "/Zm400"
+
+          # Stampa la memoria libera PRIMA, per avere un riferimento nel log
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host ("RAM libera prima: {0:N1} GB su {1:N1} GB" -f ($os.FreePhysicalMemory/1MB), ($os.TotalVisibleMemorySize/1MB))
+          Write-Host "Impostazioni: /m:2 + CL_MPCount=1 + _CL_=/Zm400"
+
+          # Una sola riga / un array: in PowerShell il comando non continua
+          # sulla riga successiva (era il bug della v17).
           $cmakeArgs = @(
             "--build", $build,
             "--config", "Release",
             "--target", "Telegram",
             "--",
-            "/m:4",
+            "/m:2",
             "/p:CL_MPCount=1",
             "/p:UseMultiToolTask=false",
-            "/p:CL_AdditionalOptions=/Zm600"
+            "/p:BuildInParallel=false"
           )
+          Write-Host ("COMANDO: cmake " + ($cmakeArgs -join " "))
           & cmake @cmakeArgs 2>&1 | Tee-Object -FilePath build.log
           $code = $LASTEXITCODE
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
+          # ---------------------------------------------------------------
+          # PROVA nel log: cerca la riga di comando vera di cl.exe nel file
+          # .tlog di MSBuild. Serve a dimostrare se le opzioni sono arrivate.
+          # ---------------------------------------------------------------
+          Write-Host ""
+          Write-Host "########## OPZIONI REALI PASSATE A cl.exe (dal file .tlog) ##########"
+          $tlogs = Get-ChildItem -Path $build -Recurse -Filter "CL.command.1.tlog" -ErrorAction SilentlyContinue
+          if (-not $tlogs) {
+            Write-Host "NESSUN .tlog trovato: la compilazione non e' mai partita."
+          } else {
+            foreach ($t in $tlogs) {
+              Write-Host "--- $($t.FullName) ---"
+              # il .tlog e' UTF-16: leggerlo cosi' evita caratteri strani
+              $lines = Get-Content -LiteralPath $t.FullName -Encoding Unicode
+              $clLines = $lines | Where-Object { $_ -match 'cl\.exe' }
+              Write-Host ("righe di comando cl.exe trovate: {0}" -f $clLines.Count)
+              ($clLines | Select-Object -First 2) | ForEach-Object { Write-Host $_ }
+            }
+          }
+          Write-Host "#####################################################################"
+
           if ($code -ne 0) {
             $log = Get-Content build.log
             Write-Host ""
-            Write-Host "################ QUALUNQUE RIGA CON 'error' ################"
-            $log | Select-String -Pattern 'error' -CaseSensitive:$false |
-              Select-Object -First 60 | ForEach-Object { Write-Host $_.Line }
+            Write-Host "################ ERRORI (primi 40) ################"
+            $log | Select-String -Pattern 'error [A-Z]+[0-9]+' -CaseSensitive:$false |
+              Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
             Write-Host ""
-            Write-Host "################ ULTIME 120 RIGHE (il guasto e' qui in mezzo) ################"
-            $start = [Math]::Max(0, $log.Count - 120)
+            Write-Host "################ ULTIME 60 RIGHE ################"
+            $start = [Math]::Max(0, $log.Count - 60)
             $log[$start..($log.Count - 1)] | ForEach-Object { Write-Host $_ }
-            Write-Host "##############################################################################"
             exit $code
           }
           Write-Host "Compilazione completata."
