@@ -263,7 +263,6 @@ jobs:
           # L'output viene MOSTRATO in diretta (Tee-Object) e salvato in
           # prepare.log per la diagnosi in caso di errore.
           $bat = "tdesktop\Telegram\build\prepare\win.bat"
-          $sw = [Diagnostics.Stopwatch]::StartNew()
           & cmd /c $bat 2>&1 | Tee-Object -FilePath prepare.log
           $code = $LASTEXITCODE
           Write-Host ("Durata 'Prepara le librerie': {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
@@ -369,8 +368,6 @@ jobs:
           if (-not (Test-Path (Join-Path $build "CMakeCache.txt"))) {
             throw "CMakeCache.txt non trovato in $build"
           }
-          $sw = [Diagnostics.Stopwatch]::StartNew()
-
           # ===============================================================
           # v22 - RISOLVE ALLA RADICE IL C1060 / C1076 / C3859
           # ---------------------------------------------------------------
@@ -447,8 +444,57 @@ jobs:
             "/p:BuildInParallel=false"
           )
           Write-Host ("COMANDO: cmake " + ($cmakeArgs -join " "))
-          & cmake @cmakeArgs *>&1 | Tee-Object -FilePath build.log | Out-Null
-          $code = $LASTEXITCODE
+          # v25 - IL LOG VA SU FILE, NON ATTRAVERSO UNA PIPE.
+          # ---------------------------------------------------------------
+          # Nella v24 (run #21) PowerShell e' morta dopo 165 minuti con:
+          #     "An error has occurred that was not properly handled."
+          #     "Out of memory."
+          #     Process completed with exit code -532462766
+          # -532462766 = 0xE0434352 = eccezione .NET non gestita.
+          # NON era cl.exe, NON era il codice v24: 165 minuti sono la durata
+          # normale della build (v22 = 161 minuti). Era il passo di PowerShell.
+          #
+          # La causa: Tee-Object su *>&1 crea una pipe. PowerShell legge ogni
+          # riga di MSBuild in un oggetto .NET e non lo libera finche' la
+          # pipeline non e' finita. Su ~250.000 righe la memoria finisce.
+          #
+          # Qui Start-Process scrive DIRETTAMENTE sui file: l'output non passa
+          # mai per la memoria di PowerShell, quindi non puo' piu' esplodere.
+          # In piu', se il processo muore, il log resta su disco.
+          # Lo svantaggio: il log non si vede in diretta, ma lo step
+          # "Cerca errori nei log allegati" lo stampa se qualcosa va storto.
+          # ---------------------------------------------------------------
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          # -ArgumentList unisce i valori con spazi SENZA virgolette, quindi
+          # un percorso con spazi verrebbe spezzato: si quota a mano.
+          $argLine = ($cmakeArgs | ForEach-Object {
+            if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+          }) -join ' '
+
+          $p = Start-Process -FilePath "cmake.exe" `
+                             -ArgumentList $argLine `
+                             -NoNewWindow -Wait -PassThru `
+                             -RedirectStandardOutput "build.out.log" `
+                             -RedirectStandardError  "build.err.log"
+          if (-not $p) {
+            throw "cmake.exe non e' partito"
+          }
+          $code = $p.ExitCode
+
+          # stdout + stderr in un unico build.log, riga per riga: nessun
+          # caricamento integrale in memoria.
+          $writer = [System.IO.StreamWriter]::new((Join-Path (Get-Location) "build.log"), $false)
+          $writer.AutoFlush = $false
+          foreach ($part in @("build.out.log","build.err.log")) {
+            if (Test-Path $part) {
+              foreach ($line in [System.IO.File]::ReadLines((Join-Path (Get-Location) $part))) {
+                $writer.WriteLine($line)
+              }
+            }
+          }
+          $writer.Close()
+          Remove-Item "build.out.log","build.err.log" -Force -ErrorAction SilentlyContinue
+          Write-Host ("build.log salvato: {0:N1} MB" -f ((Get-Item "build.log").Length/1MB))
           $sw.Stop()
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
@@ -477,16 +523,27 @@ jobs:
 
           # --- 6) se fallisce, elenca gli errori ---------------------------
           if ($code -ne 0) {
-            $log = Get-Content build.log
+            # Il log si legge cosi': su una build da 250.000 righe un
+            # Get-Content normale tiene tutto in memoria. Qui si filtra a
+            # streaming, riga per riga, e si tengono solo le ultime 40.
+            $logTail = New-Object System.Collections.Generic.Queue[string]
+            $seen = 0
+            foreach ($line in [System.IO.File]::ReadLines((Resolve-Path build.log))) {
+              $seen++
+              if ($logTail.Count -ge 40) { $null = $logTail.Dequeue() }
+              $logTail.Enqueue($line)
+            }
+            Write-Host ("Righe totali nel log: {0:N0}" -f $seen)
+            $log = @($logTail)
             Write-Host ""
             Write-Host "################ CONTEGGIO ERRORI PER TIPO ################"
-            $log | Select-String -Pattern 'error ([A-Z]+[0-9]+)' -AllMatches |
+            Select-String -LiteralPath build.log -Pattern 'error ([A-Z]+[0-9]+)' -AllMatches |
               ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
               Group-Object | Sort-Object Count -Descending |
               ForEach-Object { Write-Host ("  {0,5} x {1}" -f $_.Count, $_.Name) }
             Write-Host ""
             Write-Host "################ PRIMI 15 ERRORI ################"
-            $log | Select-String -Pattern 'error [A-Z]+[0-9]+' -CaseSensitive:$false |
+            Select-String -LiteralPath build.log -Pattern 'error [A-Z]+[0-9]+' -CaseSensitive:$false |
               Select-Object -First 15 | ForEach-Object { Write-Host $_.Line }
             Write-Host ""
             Write-Host "################ ULTIME 40 RIGHE ################"
