@@ -348,6 +348,87 @@ jobs:
           }
           Write-Host "Fatto: /MP disattivato in $($found.Count) file. Configure puo' partire."
 
+      - name: Inietta /Zm1000 nei progetti (risolve C1076 / C3859)
+        shell: pwsh
+        run: |
+          # =================================================================
+          # v25 - LA SECONDA META' DELLA CORREZIONE DI MEMORIA
+          # -----------------------------------------------------------------
+          # Run #21 (v24): PowerShell morta -> risolto mettendo l'output di
+          # cmake su file invece che in una pipe. Nel log della run #22 il
+          # log della compilazione e' arrivato intero, e dentro c'erano:
+          #      78 x C1060  compiler is out of heap space
+          #     109 x C1076  compiler limit: internal heap limit reached
+          #     109 x C3859  Failed to create virtual memory for PCH
+          #                 "PCH: Unable to commit memory across file map"
+          #
+          # Con /MP gia' disattivato e /m:1. Quindi NON e' il parallelismo:
+          # e' l'heap di cl.exe che si esaurisce.
+          #
+          # PERCHE' _CL_=/Zm800 NON FUNZIONAVA
+          # Il log lo dice: "/Zm: (vuoto)" e "CL.command.1.tlog: 0 righe
+          # cl.exe". La variabile d'ambiente _CL_ non e' mai arrivata a
+          # cl.exe perche' non passa per MSBuild, che invoca il compilatore
+          # con una riga di comando gia' costruita.
+          #
+          # LA CORREZIONE: il flag va scritto DENTRO le opzioni di
+          # compilazione, nello stesso posto dove stavamo togliendo /MP.
+          # Cosi' finisce nel .vcxproj generato da Configure, e MSBuild lo
+          # passa a OGNI invocazione di cl.exe, senza eccezioni.
+          #
+          # /Zm1000: tetto dell'heap interno di cl.exe portato a 1 GB
+          # (il default e' 100 MB, cioe' /Zm100). E' il valore massimo utile
+          # documentato da Microsoft, e va scritto come /Zm1000, non /Zm100.
+          # =================================================================
+
+          $root = Join-Path $env:GITHUB_WORKSPACE "TBuild\tdesktop"
+          $found = Get-ChildItem -Path $root -Recurse -Filter "options_win.cmake" -ErrorAction SilentlyContinue
+          if (-not $found) {
+            Write-Host "ERRORE: options_win.cmake non trovato"
+            exit 1
+          }
+
+          foreach ($f in $found) {
+            Write-Host "--- $($f.FullName)"
+            $txt = Get-Content -LiteralPath $f.FullName -Raw
+
+            if ($txt -match '/Zm\d') {
+              Write-Host "    /Zm gia' presente, lo aggiorno"
+              $txt = [regex]::Replace($txt, '/Zm\d+', '/Zm1000')
+            } else {
+              # Lo si appende alla stessa riga di target_compile_options che
+              # contiene gia' /MP (ora commentato).
+              $pattern = '(?m)^(\s*)#\s*/MP.*$'
+              if ($txt -match $pattern) {
+                $txt = [regex]::Replace(
+                  $txt,
+                  $pattern,
+                  "`$1# /MP  # v22: disattivato (causava C1060/C1076/C3859)`n`$1/Zm1000  # v25: heap di cl.exe a 1 GB (default 100 MB)"
+                )
+                Write-Host "    /Zm1000 aggiunto dopo /MP commentato"
+              } else {
+                Write-Host "    ATTENZIONE: non ho trovato /MP commentato per agganciare /Zm1000"
+                # Riserva: lo si aggiunge in fondo al file, come opzione globale.
+                $txt += "`n# v25: alza l'heap interno di cl.exe (default 100 MB).`nadd_compile_options(/Zm1000)`n"
+                Write-Host "    /Zm1000 aggiunto come add_compile_options in fondo al file"
+              }
+            }
+
+            Set-Content -LiteralPath $f.FullName -Value $txt -NoNewline
+            Select-String -LiteralPath $f.FullName -Pattern '/Zm|/MP' |
+              ForEach-Object { Write-Host ("    ora: " + $_.Line.Trim()) }
+          }
+
+          # Prova indipendente che non sia rimasto /MP attivo.
+          $still = Get-ChildItem -Path $root -Recurse -Filter "options_win.cmake" |
+            Select-String -Pattern '(?m)^\s*/MP\b'
+          if ($still) {
+            Write-Host "ERRORE: /MP e' ancora attivo:"
+            $still | ForEach-Object { Write-Host ("  " + $_.Line) }
+            exit 1
+          }
+          Write-Host "Fatto: /MP disattivato e /Zm1000 inserito nelle opzioni di compilazione."
+
       - name: Configure
         working-directory: TBuild/tdesktop/Telegram
         shell: cmd
@@ -471,30 +552,100 @@ jobs:
             if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
           }) -join ' '
 
-          $p = Start-Process -FilePath "cmake.exe" `
-                             -ArgumentList $argLine `
-                             -NoNewWindow -Wait -PassThru `
-                             -RedirectStandardOutput "build.out.log" `
-                             -RedirectStandardError  "build.err.log"
-          if (-not $p) {
-            throw "cmake.exe non e' partito"
-          }
-          $code = $p.ExitCode
+          # ===============================================================
+          # v25 - RIPROVA QUANDO E' LA MEMORIA A CEDERE
+          # ---------------------------------------------------------------
+          # Perche' serve: la v22 (commit 59e8cefa) e' passata con le STESSE
+          # opzioni di memoria di adesso, e in quella run _CL_/Zm non
+          # arrivava nemmeno a cl.exe (il log lo conferma: "/Zm: (vuoto)").
+          # Quindi il C1060/C1076/C3859 non dipende da una configurazione
+          # sbagliata: dipende da quanta memoria libera trova cl.exe in quel
+          # momento sul runner. E' casuale.
+          #
+          # La conseguenza utile: quando la build muore per memoria, TUTTI
+          # gli oggetti gia' compilati restano su disco. MSBuild e'
+          # incrementale, quindi un secondo tentativo NON ricomincia da
+          # zero: ricompila solo i file mancanti, con la memoria libera.
+          #
+          # Nel log della run #22 i file che sono morti sono qrc_*.cpp e
+          # mocs_compilation_Release.cpp, cioe' gli ULTIMI della lista:
+          # mancava poco. Un tentativo in piu' ha ottime probabilita' di
+          # chiudere il lavoro.
+          # ===============================================================
 
-          # stdout + stderr in un unico build.log, riga per riga: nessun
-          # caricamento integrale in memoria.
-          $writer = [System.IO.StreamWriter]::new((Join-Path (Get-Location) "build.log"), $false)
-          $writer.AutoFlush = $false
-          foreach ($part in @("build.out.log","build.err.log")) {
-            if (Test-Path $part) {
-              foreach ($line in [System.IO.File]::ReadLines((Join-Path (Get-Location) $part))) {
-                $writer.WriteLine($line)
+          $maxAttempts = 4
+          $code = 1
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host ""
+            Write-Host "================ TENTATIVO $attempt di $maxAttempts ================"
+
+            $outFile = "build.attempt$attempt.out.log"
+            $errFile = "build.attempt$attempt.err.log"
+
+            $p = Start-Process -FilePath "cmake.exe" `
+                               -ArgumentList $argLine `
+                               -NoNewWindow -Wait -PassThru `
+                               -RedirectStandardOutput $outFile `
+                               -RedirectStandardError  $errFile
+            if (-not $p) {
+              throw "cmake.exe non e' partito"
+            }
+            $code = $p.ExitCode
+            Write-Host ("Tentativo $attempt terminato con codice $code")
+
+            if ($code -eq 0) {
+              Write-Host "Compilazione RIUSCITA."
+              # Anche in caso di successo il log deve esistere: il passo
+              # "Salva il log della compilazione" e "Cerca errori" lo
+              # cercano sempre.
+              $w = [System.IO.StreamWriter]::new((Join-Path (Get-Location) "build.log"), $true)
+              $w.AutoFlush = $false
+              foreach ($part in @($outFile, $errFile)) {
+                if (Test-Path $part) {
+                  foreach ($line in [System.IO.File]::ReadLines((Join-Path (Get-Location) $part))) {
+                    $w.WriteLine($line)
+                  }
+                }
+              }
+              $w.Close()
+              break
+            }
+
+            # Il log del tentativo viene unito al build.log complessivo.
+            $w = [System.IO.StreamWriter]::new((Join-Path (Get-Location) "build.log"), $true)
+            $w.AutoFlush = $false
+            foreach ($part in @($outFile, $errFile)) {
+              if (Test-Path $part) {
+                foreach ($line in [System.IO.File]::ReadLines((Join-Path (Get-Location) $part))) {
+                  $w.WriteLine($line)
+                }
               }
             }
+            $w.Close()
+
+            # Era un errore di memoria? Solo in quel caso ha senso riprovare.
+            $memErrors = Select-String -LiteralPath $outFile,$errFile -Pattern 'C1060|C1076|C3859' -ErrorAction SilentlyContinue
+            $memCount = @($memErrors).Count
+            Write-Host ("Errori di memoria in questo tentativo: $memCount")
+
+            if ($memCount -eq 0) {
+              Write-Host "Il fallimento NON e' di memoria: inutile riprovare."
+              break
+            }
+            if ($attempt -lt $maxAttempts) {
+              Write-Host "Errore di memoria: riprovo. MSBuild riprende dagli oggetti gia' compilati."
+              $os = Get-CimInstance Win32_OperatingSystem
+              Write-Host ("RAM libera ora: {0:N1} GB" -f ($os.FreePhysicalMemory/1MB))
+              Start-Sleep -Seconds 20
+            }
           }
-          $writer.Close()
-          Remove-Item "build.out.log","build.err.log" -Force -ErrorAction SilentlyContinue
-          Write-Host ("build.log salvato: {0:N1} MB" -f ((Get-Item "build.log").Length/1MB))
+
+          # Ripulisco i file temporanei dei tentativi dopo averli uniti.
+          Get-ChildItem -Filter "build.attempt*.log" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+          if (Test-Path "build.log") {
+            Write-Host ("build.log salvato: {0:N1} MB" -f ((Get-Item "build.log").Length/1MB))
+          }
           $sw.Stop()
           Write-Host ("Durata compilazione: {0:N0} minuti" -f $sw.Elapsed.TotalMinutes)
 
