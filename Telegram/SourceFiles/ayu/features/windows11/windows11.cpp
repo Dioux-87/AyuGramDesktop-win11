@@ -31,6 +31,13 @@
 namespace AyuFeatures::Windows11 {
 namespace {
 
+// Declared before ActivationFilter because the filter's SetActive() calls it.
+// This is a forward declaration only: the definition is further down in this
+// same anonymous namespace. It must NOT be named ForceRepaint(): that name is
+// already declared at namespace scope in windows11.h, and a second declaration
+// here would make every call ambiguous (MSVC error C2668).
+void UpdateAllWindows();
+
 rpl::lifetime Lifetime;
 
 InterfaceTheme Applied = InterfaceTheme::System;
@@ -48,10 +55,6 @@ Platform::Surface SessionSurface = Platform::Surface::Opaque;
 bool SessionSurfaceDecided = false;
 bool SessionBackgroundChecked = false;
 bool SessionDefaultBackground = true;
-
-// Defined below in this namespace; used by the activation filter, which must
-// only repaint. Declared here so the filter can call it.
-void ForceRepaint();
 
 // The colors that make the "backgrounds" of the whole interface. In the
 // default theme they all point to the window color, so making them translucent
@@ -197,7 +200,7 @@ private:
 		ActiveWindow = active;
 		// Only a repaint: the surface and the palette must not change here,
 		// or the native window is recreated and the material is lost.
-		ForceRepaint();
+		UpdateAllWindows();
 	}
 
 };
@@ -218,7 +221,13 @@ void EnsureActivationFilter(not_null<QWidget*> window) {
 	FilteredWindows.push_back(window.get());
 }
 
-void ForceRepaint() {
+// NOTE: this is deliberately NOT called ForceRepaint(). It used to be, and
+// that was the compile error: ForceRepaint() is declared at namespace scope in
+// windows11.h, and declaring it a second time inside this anonymous namespace
+// made every call ambiguous (MSVC: error C2668 "ambiguous call to overloaded
+// function", reported on both call sites). A distinct name keeps the two
+// apart, and the public ForceRepaint() below forwards to this one.
+void UpdateAllWindows() {
 	ForEachWindowWidget([](not_null<QWidget*> window) {
 		window->update();
 	});
@@ -239,6 +248,12 @@ void ForceRepaint() {
 }
 
 } // namespace
+
+// Public entry point, declared in windows11.h. The work is done by the helper
+// inside the anonymous namespace above.
+void ForceRepaint() {
+	UpdateAllWindows();
+}
 
 bool MicaEnabled() {
 	if (!AyuSettings::getInstance().micaEffect()) {
